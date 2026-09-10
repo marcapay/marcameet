@@ -28,13 +28,102 @@ export async function processAudioTranscription(file: File | Blob, filename: str
     );
   }
 
-  // 1. Tentar OpenAI Whisper se houver openaiKey
+  // 1. Tentar Gemini 1.5 Flash Audio API se houver geminiKey
+  if (geminiKey) {
+    try {
+      const base64Audio = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          const base64 = result.includes(",") ? result.split(",")[1] : result;
+          resolve(base64);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const rawMime = file.type || "audio/webm";
+      let cleanMime = "audio/webm";
+      if (rawMime.includes("mp3")) cleanMime = "audio/mp3";
+      else if (rawMime.includes("wav")) cleanMime = "audio/wav";
+      else if (rawMime.includes("ogg")) cleanMime = "audio/ogg";
+      else if (rawMime.includes("mp4") || rawMime.includes("m4a")) cleanMime = "audio/mp4";
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: cleanMime,
+                      data: base64Audio,
+                    },
+                  },
+                  {
+                    text: `Transcreva estritamente as palavras faladas neste áudio em português. Identifique a alternância dos falantes como "Participante 1", "Participante 2", etc.
+Se houver apenas silêncio ou barulho de fundo sem palavras faladas compreensíveis, retorne um JSON com "raw_text": "" e "segments": [].
+Retorne APENAS um JSON válido exatamente neste formato:
+{
+  "raw_text": "texto completo transcrito",
+  "segments": [
+    { "start_time": 0, "end_time": 5, "speaker": "Participante 1", "text": "frase dita" }
+  ]
+}`,
+                  },
+                ],
+              },
+            ],
+            generationConfig: { responseMimeType: "application/json" },
+          }),
+        }
+      );
+
+      if (res.ok) {
+        const result = await res.json();
+        const jsonText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (jsonText) {
+          const parsed = JSON.parse(jsonText);
+          const rawText = parsed.raw_text?.trim() || "";
+          const rawSegments = parsed.segments || [];
+
+          if (rawText.length > 0 && rawSegments.length > 0) {
+            const validSegments = rawSegments
+              .filter((s: any) => s.text && s.text.trim().length > 0)
+              .map((s: any, idx: number) => ({
+                start_time: Math.round((s.start_time || 0) * 10) / 10,
+                end_time: Math.round((s.end_time || 5) * 10) / 10,
+                speaker: s.speaker || `Participante ${(idx % 2) + 1}`,
+                text: s.text.trim(),
+              }));
+
+            if (validSegments.length > 0) {
+              return {
+                raw_text: rawText,
+                segments: validSegments,
+                speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
+              };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Falha na chamada Gemini Audio API:", e);
+    }
+  }
+
+  // 2. Tentar OpenAI Whisper se houver openaiKey
   if (openaiKey) {
     try {
       const formData = new FormData();
       formData.append("file", file, filename);
       formData.append("model", "whisper-1");
       formData.append("response_format", "verbose_json");
+      formData.append("language", "pt");
 
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -46,32 +135,38 @@ export async function processAudioTranscription(file: File | Blob, filename: str
 
       if (res.ok) {
         const data = await res.json();
-        const segments = (data.segments || []).map((s: any, idx: number) => ({
-          start_time: Math.round((s.start || 0) * 10) / 10,
-          end_time: Math.round((s.end || 0) * 10) / 10,
-          speaker: `Participante ${(idx % 2) + 1}`,
-          text: s.text?.trim() || "",
-        }));
+        const rawText = data.text?.trim() || "";
+        const segments = (data.segments || [])
+          .filter((s: any) => s.text && s.text.trim().length > 0)
+          .map((s: any, idx: number) => ({
+            start_time: Math.round((s.start || 0) * 10) / 10,
+            end_time: Math.round((s.end || 0) * 10) / 10,
+            speaker: `Participante ${(idx % 2) + 1}`,
+            text: s.text.trim(),
+          }));
 
-        return {
-          raw_text: data.text || "",
-          segments: segments.length > 0 ? segments : [
-            { start_time: 0, end_time: 10, speaker: "Participante 1", text: data.text || "Áudio gravado com sucesso." }
-          ],
-          speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
-        };
+        if (rawText.length > 0) {
+          return {
+            raw_text: rawText,
+            segments: segments.length > 0 ? segments : [
+              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+            ],
+            speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
+          };
+        }
       }
     } catch (e) {
       console.warn("Falha na API OpenAI Whisper:", e);
     }
   }
 
-  // 2. Tentar Groq Whisper se houver groqKey
+  // 3. Tentar Groq Whisper se houver groqKey
   if (groqKey) {
     try {
       const formData = new FormData();
       formData.append("file", file, filename);
       formData.append("model", "whisper-large-v3");
+      formData.append("language", "pt");
 
       const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
         method: "POST",
@@ -83,34 +178,27 @@ export async function processAudioTranscription(file: File | Blob, filename: str
 
       if (res.ok) {
         const data = await res.json();
-        return {
-          raw_text: data.text || "",
-          segments: [
-            { start_time: 0, end_time: 10, speaker: "Participante 1", text: data.text || "" }
-          ],
-          speaker_map: { "Participante 1": "Participante 1" },
-        };
+        const rawText = data.text?.trim() || "";
+        if (rawText.length > 0) {
+          return {
+            raw_text: rawText,
+            segments: [
+              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+            ],
+            speaker_map: { "Participante 1": "Participante 1" },
+          };
+        }
       }
     } catch (e) {
       console.warn("Falha na API Groq Whisper:", e);
     }
   }
 
-  // Processamento com fallback de áudio gravado quando chave Gemini está configurada
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const recordingName = filename ? filename.replace(/\.[^/.]+$/, "") : "Gravação de Áudio";
-  
+  // Se o trecho de áudio for silêncio ou não contiver palavras reconhecíveis pelas APIs
   return {
-    raw_text: `Gravação de áudio registrada (${recordingName}). Transcrição efetuada com sucesso usando a chave de API cadastrada.`,
+    raw_text: "",
+    segments: [],
     speaker_map: { "Participante 1": "Participante 1" },
-    segments: [
-      {
-        start_time: 0.0,
-        end_time: 10.0,
-        speaker: "Participante 1",
-        text: `Áudio gravado com sucesso (${recordingName}). Conteúdo capturado e autenticado pela chave de API.`,
-      },
-    ],
   };
 }
 

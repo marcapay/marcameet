@@ -82,6 +82,7 @@ export default function OnlineMeetingPage() {
 
   const meetingIdRef = useRef<string>(`m-online-${Date.now()}`);
   const isChunkProcessingRef = useRef<boolean>(false);
+  const speechRecognitionRef = useRef<any>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -186,6 +187,46 @@ export default function OnlineMeetingPage() {
         handleAudioInterrupted();
       };
 
+      // Iniciar reconhecimento de voz ao vivo do navegador se suportado (SpeechRecognition API)
+      if (typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
+        try {
+          const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+          const recognition = new SpeechRecognition();
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = "pt-BR";
+
+          recognition.onresult = (event: any) => {
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+              if (event.results[i].isFinal) {
+                const spokenText = event.results[i][0].transcript.trim();
+                if (spokenText && spokenText.length > 1) {
+                  setSegments((prev) => {
+                    const exists = prev.some((p) => p.text.toLowerCase() === spokenText.toLowerCase());
+                    if (exists) return prev;
+                    return [
+                      ...prev,
+                      {
+                        id: `seg-live-${Date.now()}-${Math.random()}`,
+                        timestamp: formatTimestamp(seconds),
+                        start_time: seconds,
+                        speaker: "Participante 1",
+                        text: spokenText,
+                      },
+                    ];
+                  });
+                }
+              }
+            }
+          };
+
+          recognition.start();
+          speechRecognitionRef.current = recognition;
+        } catch (e) {
+          console.warn("Web Speech API não iniciada:", e);
+        }
+      }
+
       // Configurar MediaRecorder para fatiar o áudio em blocos contínuos de 8 segundos
       let mimeType = "audio/webm;codecs=opus";
       if (!MediaRecorder.isTypeSupported(mimeType)) {
@@ -237,15 +278,24 @@ export default function OnlineMeetingPage() {
       if (transcriptionResult && transcriptionResult.segments && transcriptionResult.segments.length > 0) {
         const currentSec = Math.max(0, seconds - 8);
 
-        const newLiveSegments: LiveSegment[] = transcriptionResult.segments.map((seg, idx) => ({
-          id: `seg-online-${Date.now()}-${idx}`,
-          timestamp: formatTimestamp(currentSec + Math.floor(seg.start_time || 0)),
-          start_time: currentSec + Math.floor(seg.start_time || 0),
-          speaker: seg.speaker || "Participante 1",
-          text: seg.text,
-        }));
+        const newLiveSegments: LiveSegment[] = transcriptionResult.segments
+          .filter((seg) => seg.text && seg.text.trim().length > 0 && !seg.text.includes("Áudio gravado com sucesso"))
+          .map((seg, idx) => ({
+            id: `seg-online-${Date.now()}-${idx}`,
+            timestamp: formatTimestamp(currentSec + Math.floor(seg.start_time || 0)),
+            start_time: currentSec + Math.floor(seg.start_time || 0),
+            speaker: seg.speaker || "Participante 1",
+            text: seg.text.trim(),
+          }));
 
-        setSegments((prev) => [...prev, ...newLiveSegments]);
+        if (newLiveSegments.length > 0) {
+          setSegments((prev) => {
+            const filteredNew = newLiveSegments.filter(
+              (ns) => !prev.some((p) => p.text.toLowerCase() === ns.text.toLowerCase())
+            );
+            return [...prev, ...filteredNew];
+          });
+        }
 
         if (transcriptionResult.speaker_map) {
           setSpeakerMap((prev) => ({ ...prev, ...transcriptionResult.speaker_map }));
