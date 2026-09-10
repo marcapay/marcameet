@@ -27,7 +27,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
-import { processAudioTranscription, hasConfiguredApiKey } from "@/lib/ai";
+import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
 
 export type OnlineMeetingStatus =
@@ -67,6 +67,11 @@ export default function OnlineMeetingPage() {
     "Participante 1": "Participante 1",
     "Participante 2": "Participante 2",
   });
+
+  // Estados de Análise com IA
+  const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+  const [analyzingStatus, setAnalyzingStatus] = useState<string>("");
+  const [savedDetails, setSavedDetails] = useState<CompleteMeetingDetails | null>(null);
 
   // Rolagem Automática Inteligente
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
@@ -349,80 +354,188 @@ export default function OnlineMeetingPage() {
     }
   };
 
-  // Etapa 5: Finalizar Reunião & Salvar Dados Sem Resumo IA
+  // Etapa 5: Finalizar Reunião & Executar Análise com Inteligência Artificial
   const finishMeeting = async () => {
-    if (confirm("Deseja encerrar a captura e finalizar a reunião online?")) {
-      setMeetingStatus("Finalizado");
+    if (!confirm("Deseja encerrar a captura e finalizar a reunião online com análise por IA?")) return;
 
-      if (startTimeRef.current > 0) {
-        accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-        startTimeRef.current = 0;
-      }
-      const finalDuration = Math.max(1, Math.floor(accumulatedTimeRef.current / 1000));
-      setSeconds(finalDuration);
+    setIsAnalyzingAI(true);
+    setAnalyzingStatus("Encerrando captura de áudio e organizando a transcrição...");
+    setMeetingStatus("Finalizado");
 
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-        try {
-          mediaRecorderRef.current.stop();
-        } catch (e) {}
-      }
-
-      if (mediaStreamRef.current) {
-        mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-      }
-
-      const meetingId = meetingIdRef.current;
-      const fullRawText = segments.map((s) => `[${s.timestamp}] ${s.speaker}: ${s.text}`).join("\n");
-
-      const completeDetails: CompleteMeetingDetails = {
-        meeting: {
-          id: meetingId,
-          user_id: "u-001",
-          title: meetingTitle.trim(),
-          description: `Transcrição de reunião online (${platform}) capturada via navegador.`,
-          meeting_date: new Date().toISOString(),
-          duration_seconds: finalDuration,
-          source_type: "online_meeting",
-          status: "CONCLUIDA",
-          error_message: null,
-          tags: ["Reunião Online", platform],
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-        transcript: {
-          id: `t-${meetingId}`,
-          meeting_id: meetingId,
-          raw_text: fullRawText,
-          speaker_map: speakerMap,
-          segments: segments.map((s) => ({
-            id: s.id,
-            transcript_id: `t-${meetingId}`,
-            meeting_id: meetingId,
-            start_time: s.start_time,
-            end_time: s.start_time + 5,
-            speaker: s.speaker,
-            text: s.text,
-          })),
-        },
-        highlights: [],
-        decisions: [],
-        tasks: [],
-        pending_items: [],
-        risks: [],
-        opportunities: [],
-        values: [],
-        dates: [],
-        quotes: [],
-        next_steps_agreed: [],
-        next_steps_ai_suggestions: [],
-      };
-
-      // Salvar reunião no localStorage e Supabase (sem gerar resumo automático)
-      saveLocalMeeting(completeDetails);
-
-      setStep("finished");
-      showToast("Reunião finalizada e transcrição salva no histórico!");
+    if (startTimeRef.current > 0) {
+      accumulatedTimeRef.current += Date.now() - startTimeRef.current;
+      startTimeRef.current = 0;
     }
+    const finalDuration = Math.max(1, Math.floor(accumulatedTimeRef.current / 1000));
+    setSeconds(finalDuration);
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+    }
+
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.stop();
+      } catch (e) {}
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+    }
+
+    const meetingId = meetingIdRef.current;
+    const fullRawText = segments.length > 0
+      ? segments.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n")
+      : "Reunião finalizada sem trecho de fala gravado.";
+
+    let aiData: any = null;
+
+    try {
+      setAnalyzingStatus("Processando inteligência artificial (resumo executivo, decisões e tarefas)...");
+      aiData = await processAIAnalysis(fullRawText, segments);
+    } catch (err: any) {
+      console.warn("Falha na chamada da análise de IA:", err);
+    }
+
+    setAnalyzingStatus("Salvando reunião e sincronizando no histórico...");
+
+    const formattedTasks = (aiData?.tasks || []).map((t: any, idx: number) => ({
+      id: `task-${meetingId}-${idx}`,
+      meeting_id: meetingId,
+      user_id: "u-001",
+      title: t.title,
+      description: t.description || "",
+      assignee: t.assignee || "Responsável não definido",
+      due_date: undefined,
+      original_due_date_text: t.due_date_text || "Prazo não definido",
+      priority: (t.priority as any) || "Média",
+      status: "Pendente" as const,
+      timestamp_start: t.timestamp_start,
+      original_snippet: t.original_snippet,
+      created_at: new Date().toISOString(),
+      meeting_title: meetingTitle.trim(),
+    }));
+
+    const completeDetails: CompleteMeetingDetails = {
+      meeting: {
+        id: meetingId,
+        user_id: "u-001",
+        title: meetingTitle.trim(),
+        description: `Transcrição de reunião online (${platform}) capturada via navegador e detalhada via IA.`,
+        meeting_date: new Date().toISOString(),
+        duration_seconds: finalDuration,
+        source_type: "online_meeting",
+        status: "CONCLUIDA",
+        error_message: null,
+        tags: ["Reunião Online", platform, "Análise IA"],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        tasks_count: formattedTasks.length,
+        decisions_count: (aiData?.decisions || []).length,
+        highlights_count: (aiData?.highlights || []).length,
+      },
+      transcript: {
+        id: `t-${meetingId}`,
+        meeting_id: meetingId,
+        raw_text: fullRawText,
+        speaker_map: speakerMap,
+        segments: segments.map((s) => ({
+          id: s.id,
+          transcript_id: `t-${meetingId}`,
+          meeting_id: meetingId,
+          start_time: s.start_time,
+          end_time: s.start_time + 5,
+          speaker: speakerMap[s.speaker] || s.speaker,
+          text: s.text,
+        })),
+      },
+      summary: aiData ? {
+        id: `sum-${meetingId}`,
+        meeting_id: meetingId,
+        objective: aiData.objective || "Transcrição de reunião online capturada via navegador.",
+        key_topics: aiData.key_topics || [],
+        conclusions: aiData.conclusions || "Reunião concluída.",
+        final_status: aiData.final_status || "Concluído",
+      } : undefined,
+      highlights: (aiData?.highlights || []).map((h: any, i: number) => ({
+        id: `h-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        description: h.description,
+        timestamp_start: h.timestamp_start,
+        original_snippet: h.original_snippet,
+      })),
+      decisions: (aiData?.decisions || []).map((d: any, i: number) => ({
+        id: `d-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        decision_text: d.decision_text,
+        timestamp_start: d.timestamp_start,
+        original_snippet: d.original_snippet,
+      })),
+      tasks: formattedTasks,
+      pending_items: (aiData?.pending_items || []).map((p: any, i: number) => ({
+        id: `p-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        item_text: p.item_text,
+        timestamp_start: p.timestamp_start,
+      })),
+      risks: (aiData?.risks || []).map((r: any, i: number) => ({
+        id: `r-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        risk_type: r.risk_type,
+        description: r.description,
+        is_ai_generated: r.is_ai_generated,
+        timestamp_start: r.timestamp_start,
+      })),
+      opportunities: (aiData?.opportunities || []).map((op: any, i: number) => ({
+        id: `op-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        category: op.category,
+        description: op.description,
+        timestamp_start: op.timestamp_start,
+      })),
+      values: (aiData?.values || []).map((v: any, i: number) => ({
+        id: `v-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        amount_formatted: v.amount_formatted,
+        numeric_value: v.numeric_value,
+        context: v.context,
+        timestamp_start: v.timestamp_start,
+        original_snippet: v.original_snippet,
+      })),
+      dates: (aiData?.dates || []).map((dt: any, i: number) => ({
+        id: `dt-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        date_text: dt.date_text,
+        context: dt.context,
+        timestamp_start: dt.timestamp_start,
+      })),
+      quotes: (aiData?.quotes || []).map((q: any, i: number) => ({
+        id: `q-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        speaker: q.speaker,
+        quote_text: q.quote_text,
+        timestamp_start: q.timestamp_start,
+      })),
+      next_steps_agreed: (aiData?.next_steps_agreed || []).map((ns: any, i: number) => ({
+        id: `ns-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        step_text: ns.step_text,
+      })),
+      next_steps_ai_suggestions: (aiData?.next_steps_ai_suggestions || []).map((ns: any, i: number) => ({
+        id: `nss-${meetingId}-${i}`,
+        meeting_id: meetingId,
+        suggestion_text: ns.suggestion_text,
+      })),
+    };
+
+    saveLocalMeeting(completeDetails);
+    setSavedDetails(completeDetails);
+
+    setIsAnalyzingAI(false);
+    setStep("finished");
+    showToast("Reunião finalizada e análise IA gerada com sucesso!");
   };
 
   const copyFullTranscript = () => {
@@ -559,8 +672,24 @@ export default function OnlineMeetingPage() {
         </div>
       )}
 
-      {/* ================= PASSO 2: INTERFACE DE TRANSCRIÇÃO AO VIVO ================= */}
-      {(step === "recording" || step === "finished") && (
+      {/* ================= MODAL / OVERLAY DE PROCESSAMENTO IA ================= */}
+      {isAnalyzingAI && (
+        <div className="p-12 rounded-3xl glass-card border border-indigo-500/30 text-center space-y-6 animate-pulse my-8 shadow-2xl">
+          <div className="w-16 h-16 rounded-3xl bg-indigo-600/30 border border-indigo-500/50 flex items-center justify-center mx-auto shadow-2xl shadow-indigo-600/50">
+            <Sparkles className="w-8 h-8 text-indigo-400 animate-spin" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-xl font-black text-white">Analisando Reunião com Inteligência Artificial</h3>
+            <p className="text-sm font-semibold text-indigo-300">{analyzingStatus || "Processando inteligência artificial..."}</p>
+            <p className="text-xs text-slate-400 max-w-md mx-auto pt-2">
+              Sintetizando resumo executivo, decisões estratégicas, tarefas com responsáveis e prazos.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ================= PASSO 2: INTERFACE DE TRANSCRIÇÃO AO VIVO & RESULTADO ================= */}
+      {!isAnalyzingAI && (step === "recording" || step === "finished") && (
         <div className="space-y-6">
           {/* Painel de Status & Cronômetro */}
           <div className="p-6 rounded-3xl glass-card border border-indigo-500/20 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
@@ -628,16 +757,97 @@ export default function OnlineMeetingPage() {
               )}
 
               {step === "finished" && (
-                <button
-                  onClick={copyFullTranscript}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-emerald-600/30 transition-all active:scale-95"
-                >
-                  <Copy className="w-4 h-4" />
-                  <span>Copiar Transcrição</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => router.push(`/meetings/${meetingIdRef.current}`)}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all active:scale-95"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>Ver Análise Detalhada</span>
+                  </button>
+
+                  <button
+                    onClick={copyFullTranscript}
+                    className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-bold text-xs flex items-center gap-2 transition-all active:scale-95"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>Copiar Transcrição</span>
+                  </button>
+
+                  <button
+                    onClick={() => router.push("/meetings")}
+                    className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-400 hover:text-white font-bold text-xs flex items-center gap-2 transition-all active:scale-95"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Minhas Reuniões</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>
+
+          {/* Banner de Confirmação quando Finalizado */}
+          {step === "finished" && savedDetails && (
+            <div className="p-6 rounded-3xl bg-gradient-to-r from-indigo-900/60 to-purple-900/60 border border-indigo-500/30 space-y-4 shadow-2xl">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center shrink-0">
+                  <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">Reunião Concluída & Analisada pela IA!</h3>
+                  <p className="text-xs text-indigo-200">
+                    A inteligência artificial processou todo o conteúdo falado e gerou o relatório completo.
+                  </p>
+                </div>
+              </div>
+
+              {/* Card Resumo Rápido */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                  <div className="flex items-center gap-2 text-indigo-400 text-xs font-bold uppercase tracking-wider">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Objetivo</span>
+                  </div>
+                  <p className="text-xs text-slate-200 line-clamp-3">
+                    {savedDetails.summary?.objective || "Transcrição finalizada e gravada."}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                  <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold uppercase tracking-wider">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Decisões ({savedDetails.decisions?.length || 0})</span>
+                  </div>
+                  {savedDetails.decisions && savedDetails.decisions.length > 0 ? (
+                    <p className="text-xs text-slate-200 line-clamp-3 font-semibold">
+                      {savedDetails.decisions[0].decision_text}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">Nenhuma decisão registrada.</p>
+                  )}
+                </div>
+
+                <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-1">
+                  <div className="flex items-center gap-2 text-amber-400 text-xs font-bold uppercase tracking-wider">
+                    <Clock className="w-3.5 h-3.5" />
+                    <span>Tarefas ({savedDetails.tasks?.length || 0})</span>
+                  </div>
+                  {savedDetails.tasks && savedDetails.tasks.length > 0 ? (
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-200 line-clamp-2 font-semibold">
+                        • {savedDetails.tasks[0].title}
+                      </p>
+                      <span className="text-[10px] text-amber-300 bg-amber-500/20 px-2 py-0.5 rounded font-mono">
+                        Resp: {savedDetails.tasks[0].assignee}
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">Nenhuma tarefa atribuída.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Aviso de Áudio Interrompido */}
           {meetingStatus === "Áudio interrompido" && (
