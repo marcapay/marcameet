@@ -1,4 +1,4 @@
-export type MeetingSourceType = 'recording' | 'audio_upload' | 'video_upload' | 'pasted_text';
+export type MeetingSourceType = 'recording' | 'audio_upload' | 'video_upload' | 'pasted_text' | 'online_meeting';
 
 export type MeetingStatus = 
   | 'CRIADA' 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Video, Mic, FileText, Settings } from "lucide-react";
+import { Home, Video, Mic, FileText, Settings, Radio } from "lucide-react";
 
 export function Header() {
   const pathname = usePathname();
@@ -10,7 +10,8 @@ export function Header() {
   const navItems = [
     { label: "Início", href: "/", icon: Home },
     { label: "Reuniões", href: "/meetings", icon: Video },
-    { label: "Gravar", href: "/record", icon: Mic, highlight: true },
+    { label: "Reunião Online", href: "/online-meet", icon: Radio, highlight: true },
+    { label: "Gravar", href: "/record", icon: Mic },
     { label: "Resumos", href: "/tasks", icon: FileText },
     { label: "Configurações", href: "/settings", icon: Settings },
   ];
@@ -31,7 +32,7 @@ export function Header() {
       </Link>
 
       {/* Menu Principal no Cabeçalho (Espaçado e Sem Marcação de Caixas) */}
-      <nav className="hidden md:flex items-center gap-8 lg:gap-10">
+      <nav className="hidden md:flex items-center gap-6 lg:gap-8">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = pathname === item.href || (item.href !== "/" && pathname?.startsWith(item.href));
@@ -56,7 +57,7 @@ export function Header() {
                 )}
 
                 {item.highlight && !isActive && (
-                  <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+                  <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                 )}
               </Link>
 
@@ -71,11 +72,19 @@ export function Header() {
         })}
       </nav>
 
-      {/* Action Button */}
-      <div className="flex items-center gap-3">
+      {/* Action Buttons */}
+      <div className="flex items-center gap-2.5">
+        <Link
+          href="/online-meet"
+          className="hidden lg:flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600/90 hover:bg-indigo-500 text-white font-semibold text-xs shadow-lg shadow-indigo-600/20 border border-indigo-500/30 transition-all active:scale-95"
+        >
+          <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+          <span>Transcrever Reunião Online</span>
+        </Link>
+
         <Link
           href="/record"
-          className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-semibold text-sm shadow-lg shadow-rose-500/20 transition-all active:scale-95"
+          className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-rose-500/20 transition-all active:scale-95"
         >
           <Mic className="w-4 h-4" />
           <span>Gravar Reunião</span>

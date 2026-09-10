@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import {
   Mic,
   Square,
@@ -27,7 +28,8 @@ import {
   Tag,
   TrendingUp,
   Download,
-  ArrowRight
+  ArrowRight,
+  Radio
 } from "lucide-react";
 import { getLocalMeetings, saveLocalMeeting, updateSpeakerNameInMeeting, updateMeetingTitle } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
@@ -540,6 +542,14 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
             <Mic className="w-4 h-4 text-rose-400" />
             <span>GRAVAR AO VIVO</span>
           </button>
+
+          <Link
+            href="/online-meet"
+            className="py-2.5 px-4 md:px-5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all bg-indigo-600/90 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 border border-indigo-500/40 active:scale-95"
+          >
+            <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+            <span>REUNIÃO ONLINE</span>
+          </Link>
         </div>
       </div>
 
