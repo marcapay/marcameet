@@ -1,6 +1,7 @@
 import { ExtractionResponse, TranscriptionResponse } from "./types";
 import { SYSTEM_MEETING_ANALYSIS_PROMPT } from "./prompts";
 import { getStoredKey } from "@/lib/storage/keysStorage";
+import { CompleteMeetingDetails } from "@/types/database";
 
 export function getActiveApiKeys() {
   const openaiKey = getStoredKey("ai_openai_key", process.env.OPENAI_API_KEY || "");
@@ -324,3 +325,142 @@ export async function processAIAnalysis(transcriptText: string, segments: any[] 
     quotes: [],
   };
 }
+
+export interface MeetingChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp?: string;
+}
+
+export async function askMeetingAI(
+  details: CompleteMeetingDetails,
+  userQuestion: string,
+  history: MeetingChatMessage[] = []
+): Promise<string> {
+  const { geminiKey, openaiKey } = getActiveApiKeys();
+
+  const formattedSegments = (details.transcript?.segments || [])
+    .map((s) => {
+      const m = Math.floor((s.start_time || 0) / 60)
+        .toString()
+        .padStart(2, "0");
+      const sec = Math.floor((s.start_time || 0) % 60)
+        .toString()
+        .padStart(2, "0");
+      const speaker = details.transcript?.speaker_map?.[s.speaker] || s.speaker;
+      return `[${m}:${sec}] ${speaker}: ${s.text}`;
+    })
+    .join("\n");
+
+  const systemContext = `Você é um assistente virtual especialista analisando a reunião "${details.meeting.title}".
+Sua função é responder às dúvidas do usuário sobre o que foi discutido na reunião.
+
+REGRAS DE RESPOSTA OBRIGATÓRIAS:
+1. Responda em português de forma clara, amigável e direta.
+2. SEMPRE QUE REFERENCIAR UM MOMENTO OU ASSUNTO DISCUTIDO, INDIQUE O MINUTO EXATO NO FORMATO [MM:SS] (exemplo: [02:15] ou [14:30]).
+3. Se o usuário perguntar "em qual parte foi falado X", identifique o trecho na transcrição e diga o minuto [MM:SS], quem falou (participante) e a explicação.
+4. Se o assunto não tiver sido tratado na reunião, diga educadamente que ele não foi mencionado na gravação.
+
+DADOS DA REUNIÃO:
+Título: ${details.meeting.title}
+Data: ${new Date(details.meeting.meeting_date).toLocaleDateString("pt-BR")}
+Resumo / Objetivo: ${details.summary?.objective || "Não especificado"}
+Conclusão: ${details.summary?.conclusions || "Não especificado"}
+
+DECISÕES TOMADAS:
+${(details.decisions || []).map((d) => `- ${d.decision_text}`).join("\n") || "Nenhuma decisão registrada"}
+
+TAREFAS ATRIBUÍDAS:
+${(details.tasks || []).map((t) => `- ${t.title} (Responsável: ${t.assignee}, Prioridade: ${t.priority})`).join("\n") || "Nenhuma tarefa registrada"}
+
+TRANSCRIÇÃO COMPLETA DA REUNIÃO COM MINUTAGEM:
+${formattedSegments || details.transcript?.raw_text || "Nenhuma transcrição gravada."}`;
+
+  // 1. Tentar Gemini 1.5 Flash API
+  if (geminiKey) {
+    try {
+      const contentsParts = [
+        { text: systemContext },
+        ...history.map((h) => ({
+          text: `${h.role === "user" ? "Usuário" : "Assistente"}: ${h.content}`,
+        })),
+        { text: `Usuário: ${userQuestion}` },
+      ];
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: contentsParts }],
+          }),
+        }
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) return text.trim();
+      }
+    } catch (e) {
+      console.warn("Falha no Gemini Chat API:", e);
+    }
+  }
+
+  // 2. Tentar OpenAI Chat Completion API
+  if (openaiKey) {
+    try {
+      const messages = [
+        { role: "system", content: systemContext },
+        ...history.map((h) => ({ role: h.role, content: h.content })),
+        { role: "user", content: userQuestion },
+      ];
+
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) return content.trim();
+      }
+    } catch (e) {
+      console.warn("Falha no OpenAI Chat API:", e);
+    }
+  }
+
+  // 3. Fallback Inteligente Local (Pesquisa de Palavras e Minutagem)
+  const qLower = userQuestion.toLowerCase();
+  const matchedSegments = (details.transcript?.segments || []).filter(
+    (s) =>
+      s.text.toLowerCase().includes(qLower) ||
+      qLower.split(" ").some((w) => w.length > 3 && s.text.toLowerCase().includes(w))
+  );
+
+  if (matchedSegments.length > 0) {
+    const firstMatch = matchedSegments[0];
+    const m = Math.floor((firstMatch.start_time || 0) / 60)
+      .toString()
+      .padStart(2, "0");
+    const sec = Math.floor((firstMatch.start_time || 0) % 60)
+      .toString()
+      .padStart(2, "0");
+    const speaker = details.transcript?.speaker_map?.[firstMatch.speaker] || firstMatch.speaker;
+
+    return `Este assunto foi mencionado por ${speaker} aos [${m}:${sec}]:\n"${firstMatch.text}"\n\n(Dica: Clique na minutagem [${m}:${sec}] para ouvir diretamente este ponto do áudio!).`;
+  }
+
+  return `Não encontrei menção direta a esse assunto na reunião "${details.meeting.title}". Você pode verificar a transcrição completa na aba "Transcrição Completa".`;
+}
+

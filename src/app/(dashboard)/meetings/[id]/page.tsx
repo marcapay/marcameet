@@ -22,11 +22,16 @@ import {
   Share2,
   UserCheck,
   Trash2,
-  X
+  X,
+  MessageSquare,
+  Send,
+  Bot,
+  ChevronRight
 } from "lucide-react";
 import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
+import { askMeetingAI, MeetingChatMessage } from "@/lib/ai";
 
 export default function MeetingDetailPage() {
   const params = useParams();
@@ -34,7 +39,7 @@ export default function MeetingDetailPage() {
   const id = params.id as string;
 
   const [details, setDetails] = useState<CompleteMeetingDetails | null>(null);
-  const [activeTab, setActiveTab] = useState<"summary" | "transcript" | "export">("summary");
+  const [activeTab, setActiveTab] = useState<"summary" | "transcript" | "export" | "chat">("summary");
   
   // Transcrição & Player
   const [seekTime, setSeekTime] = useState<number | null>(null);
@@ -42,6 +47,12 @@ export default function MeetingDetailPage() {
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [newSpeakerName, setNewSpeakerName] = useState("");
   const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
+
+  // Conversar com IA (Chat)
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<MeetingChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isThinkingAI, setIsThinkingAI] = useState(false);
 
   // Edição de Título da Reunião
   const [isEditingTitle, setIsEditingTitle] = useState(false);
@@ -92,6 +103,76 @@ export default function MeetingDetailPage() {
     navigator.clipboard.writeText(text);
     setCopiedNotification(label);
     setTimeout(() => setCopiedNotification(null), 2500);
+  };
+
+  const handleSendChatMessage = async (overrideText?: string) => {
+    const textToSend = overrideText || chatInput;
+    if (!textToSend.trim() || !details || isThinkingAI) return;
+
+    const userMsg: MeetingChatMessage = {
+      id: `msg-user-${Date.now()}`,
+      role: "user",
+      content: textToSend.trim(),
+      timestamp: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+    };
+
+    setChatMessages((prev) => [...prev, userMsg]);
+    if (!overrideText) setChatInput("");
+    setIsThinkingAI(true);
+
+    try {
+      const response = await askMeetingAI(details, userMsg.content, chatMessages);
+      const aiMsg: MeetingChatMessage = {
+        id: `msg-ai-${Date.now()}`,
+        role: "assistant",
+        content: response,
+        timestamp: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+      };
+      setChatMessages((prev) => [...prev, aiMsg]);
+    } catch (err) {
+      console.error("Erro ao comunicar com a IA:", err);
+    } finally {
+      setIsThinkingAI(false);
+    }
+  };
+
+  const renderMessageContent = (content: string) => {
+    const regex = /\[(\d{1,2}:\d{2})\]/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = regex.exec(content)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(content.substring(lastIndex, match.index));
+      }
+      const timeStr = match[1];
+      const [m, s] = timeStr.split(":").map(Number);
+      const totalSecs = m * 60 + s;
+
+      parts.push(
+        <button
+          key={`ts-${match.index}`}
+          onClick={() => {
+            setSeekTime(totalSecs);
+            setCopiedNotification(`Áudio reposicionado em ${timeStr}`);
+            setTimeout(() => setCopiedNotification(null), 2500);
+          }}
+          className="inline-flex items-center gap-1 px-2 py-0.5 mx-1 rounded-md bg-indigo-600/30 text-indigo-300 font-mono text-xs font-bold border border-indigo-500/40 hover:bg-indigo-500 hover:text-white transition-all cursor-pointer shadow-sm"
+          title={`Clique para tocar o áudio em ${timeStr}`}
+        >
+          <Clock className="w-3 h-3 text-indigo-300" />
+          <span>{timeStr}</span>
+        </button>
+      );
+      lastIndex = regex.lastIndex;
+    }
+
+    if (lastIndex < content.length) {
+      parts.push(content.substring(lastIndex));
+    }
+
+    return parts.length > 0 ? parts : content;
   };
 
   const formatTimestamp = (sec?: number) => {
@@ -179,7 +260,16 @@ export default function MeetingDetailPage() {
         </div>
 
         {/* Ações da Reunião */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setActiveTab("chat")}
+            className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all active:scale-95 border border-indigo-400/30 animate-pulse hover:animate-none"
+            title="Conversar com a IA sobre o que foi discutido nesta reunião"
+          >
+            <MessageSquare className="w-4 h-4 text-purple-200" />
+            <span>Conversar com IA</span>
+          </button>
+
           <button
             onClick={() => {
               setNewTitle(meeting.title);
@@ -233,10 +323,10 @@ export default function MeetingDetailPage() {
       <MediaPlayer seekToTime={seekTime} />
 
       {/* Abas Principais */}
-      <div className="flex items-center border-b border-slate-800 gap-2">
+      <div className="flex items-center border-b border-slate-800 gap-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab("summary")}
-          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${
+          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
             activeTab === "summary"
               ? "border-indigo-500 text-indigo-400"
               : "border-transparent text-slate-400 hover:text-slate-200"
@@ -244,6 +334,18 @@ export default function MeetingDetailPage() {
         >
           <Sparkles className="w-4 h-4" />
           <span>Análise com IA</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("chat")}
+          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "chat"
+              ? "border-indigo-500 text-indigo-400"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <MessageSquare className="w-4 h-4 text-purple-400" />
+          <span>Conversar com IA</span>
         </button>
 
         <button
@@ -499,6 +601,136 @@ export default function MeetingDetailPage() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ABA: CONVERSAR COM A INTELIGÊNCIA ARTIFICIAL */}
+      {activeTab === "chat" && (
+        <div className="p-6 md:p-8 rounded-3xl glass-card border border-indigo-500/30 space-y-6 shadow-2xl animate-fadeIn">
+          {/* Header do Chat */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800/80 pb-5">
+            <div className="space-y-1">
+              <h2 className="text-xl font-black text-white flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-purple-600/30 border border-purple-500/40 flex items-center justify-center">
+                  <Bot className="w-5 h-5 text-purple-400" />
+                </div>
+                <span>Conversar com a Inteligência Artificial</span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Pergunte sobre o que foi discutido em <strong className="text-indigo-300">"{meeting.title}"</strong>. A IA indicará quem falou e o minuto exacto <span className="text-indigo-400 font-mono">[MM:SS]</span> para você clicar e ouvir.
+              </p>
+            </div>
+
+            {chatMessages.length > 0 && (
+              <button
+                onClick={() => setChatMessages([])}
+                className="text-xs text-slate-500 hover:text-rose-400 font-semibold transition-colors shrink-0"
+              >
+                Limpar Conversa
+              </button>
+            )}
+          </div>
+
+          {/* Histórico do Chat */}
+          <div className="min-h-[380px] max-h-[520px] overflow-y-auto pr-2 space-y-4 custom-scrollbar">
+            {chatMessages.length === 0 ? (
+              <div className="py-10 text-center space-y-6">
+                <div className="w-16 h-16 rounded-3xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center mx-auto shadow-2xl shadow-indigo-600/20 animate-pulse">
+                  <Sparkles className="w-8 h-8 text-indigo-400" />
+                </div>
+
+                <div className="space-y-1 max-w-md mx-auto">
+                  <h3 className="text-base font-bold text-white">Tire suas dúvidas sobre a reunião</h3>
+                  <p className="text-xs text-slate-400">
+                    Selecione uma sugestão ou digite sua pergunta no campo abaixo.
+                  </p>
+                </div>
+
+                {/* Sugestões de Perguntas Rápida */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-2xl mx-auto pt-2">
+                  {[
+                    "Em qual parte ou minuto foi falado sobre o assunto principal da reunião?",
+                    "Quais decisões foram aprovadas pelos participantes?",
+                    "Quem ficou responsável pelas tarefas e quais são os prazos?",
+                    "Qual foi a fala mais relevante mencionada durante a conversa?",
+                  ].map((q, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => handleSendChatMessage(q)}
+                      className="p-3.5 rounded-2xl bg-slate-900/90 border border-slate-800 hover:border-indigo-500/50 text-slate-300 hover:text-white text-xs text-left font-semibold transition-all hover:bg-slate-800/80 flex items-center justify-between group shadow-md"
+                    >
+                      <span className="line-clamp-2">{q}</span>
+                      <ChevronRight className="w-4 h-4 text-slate-500 group-hover:text-indigo-400 shrink-0 ml-2" />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              chatMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`flex flex-col ${
+                    msg.role === "user" ? "items-end" : "items-start"
+                  } space-y-1 animate-fadeIn`}
+                >
+                  <div className="flex items-center gap-2 text-[10px] text-slate-500 px-1">
+                    <span className="font-bold">
+                      {msg.role === "user" ? "Você" : "Assistente da Reunião"}
+                    </span>
+                    <span>• {msg.timestamp}</span>
+                  </div>
+
+                  <div
+                    className={`max-w-[85%] sm:max-w-[80%] p-4 rounded-2xl text-xs sm:text-sm leading-relaxed shadow-lg ${
+                      msg.role === "user"
+                        ? "bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-tr-none"
+                        : "bg-slate-900/90 border border-indigo-500/30 text-slate-200 rounded-tl-none font-sans whitespace-pre-wrap"
+                    }`}
+                  >
+                    {msg.role === "user"
+                      ? msg.content
+                      : renderMessageContent(msg.content)}
+                  </div>
+                </div>
+              ))
+            )}
+
+            {/* Typing Indicator */}
+            {isThinkingAI && (
+              <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-900/90 border border-indigo-500/30 w-fit text-xs text-indigo-300 animate-pulse">
+                <Bot className="w-4 h-4 text-purple-400 animate-spin" />
+                <span>Analisando transcrição e identificando a minutagem...</span>
+              </div>
+            )}
+          </div>
+
+          {/* Campo de Entrada de Mensagem */}
+          <div className="pt-2">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSendChatMessage();
+              }}
+              className="flex items-center gap-2.5 p-2 rounded-2xl bg-slate-900 border border-slate-800 focus-within:border-indigo-500 transition-all shadow-xl"
+            >
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                disabled={isThinkingAI}
+                placeholder="Digite sua dúvida (ex: em qual minuto falaram sobre X?)..."
+                className="w-full bg-transparent px-3 py-2 text-xs md:text-sm text-white placeholder-slate-500 focus:outline-none"
+              />
+
+              <button
+                type="submit"
+                disabled={!chatInput.trim() || isThinkingAI}
+                className="p-3 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all shrink-0 active:scale-95"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </div>
         </div>
       )}
 
