@@ -36,6 +36,8 @@ import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } fro
 import { requestScreenWakeLock, releaseScreenWakeLock, startAudioKeepAlive, stopAudioKeepAlive } from "@/lib/audio/recordingKeepAlive";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
+import { recordingEngine } from "@/lib/audio/recordingEngine";
+
 
 export function MobileApp() {
   const [activeTab, setActiveTab] = useState<"record" | "summary" | "transcript">("summary");
@@ -110,30 +112,34 @@ export function MobileApp() {
     }
   };
 
-  // Cronômetro da Gravação com sincronização em tempo real e reativação em tela ativa (visibilitychange)
+  // Subscrever a eventos da Engine Central de Gravação
   useEffect(() => {
-    if (isRecording && !isPaused) {
-      timerRef.current = setInterval(() => {
-        updateTimer();
-      }, 500);
-
-      const handleVisibilityChange = () => {
-        if (document.visibilityState === "visible") {
-          updateTimer();
-          requestScreenWakeLock();
+    const unsubscribe = recordingEngine.subscribe({
+      onStatusChange: (status, session) => {
+        if (session) {
+          setIsRecording(status === "recording" || status === "background" || status === "interrupted" || status === "reconnecting");
+          setIsPaused(session.recorder_status === "paused");
+        } else {
+          setIsRecording(false);
+          setIsPaused(false);
         }
-      };
+      },
+      onTimerTick: (sec) => {
+        setSeconds(sec);
+      },
+    });
 
-      document.addEventListener("visibilitychange", handleVisibilityChange);
-
-      return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-        document.removeEventListener("visibilitychange", handleVisibilityChange);
-      };
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
+    const active = recordingEngine.getActiveSession();
+    if (active && recordingEngine.hasLiveRecorder()) {
+      setIsRecording(true);
+      setIsPaused(active.recorder_status === "paused");
+      setSeconds(recordingEngine.getElapsedSeconds());
     }
-  }, [isRecording, isPaused]);
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const formatTimer = (totalSec: number) => {
     const hrs = Math.floor(totalSec / 3600);
@@ -157,156 +163,105 @@ export function MobileApp() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Iniciar Gravação com Wake Lock, Audio Keep-Alive e Verificação de Key
+  // Iniciar Gravação com Engine Central
   const startRecording = async () => {
-    if (!hasConfiguredApiKey()) {
-      alert("⚠️ Nenhuma API Key cadastrada! Para gravar reuniões, acesse as Configurações (ícone de engrenagem) e insira sua chave de API.");
-      return;
-    }
-
     try {
-      await requestScreenWakeLock();
-      startAudioKeepAlive();
-
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunksRef.current = [];
+      const meetingId = `m-${Date.now()}`;
+      const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
-      let mimeType = "audio/webm;codecs=opus";
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = "audio/ogg";
-      }
 
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      // Listener para caso a faixa de áudio pare inesperadamente
-      stream.getAudioTracks().forEach((track) => {
-        track.onended = () => {
-          console.warn("Entrada de áudio encerrada pelo sistema.");
-        };
+      await recordingEngine.startRecording({
+        meetingId,
+        title: meetingTitle,
+        sourceType: "recording",
+        stream,
+        wakeLockEnabled: true,
+        chunkIntervalMs: 8000,
       });
-
-      recorder.start(1000);
-
-      startTimeRef.current = Date.now();
-      accumulatedTimeRef.current = 0;
 
       setIsRecording(true);
       setIsPaused(false);
-      setSeconds(0);
     } catch (err) {
       console.error("Erro ao acessar microfone:", err);
       alert("Não foi possível acessar o microfone. Verifique as permissões do navegador.");
-      releaseScreenWakeLock();
-      stopAudioKeepAlive();
     }
   };
 
   // Pausar Gravação
   const pauseRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.pause();
-      if (startTimeRef.current > 0) {
-        accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-        startTimeRef.current = 0;
-      }
-      setIsPaused(true);
-    }
+    recordingEngine.pauseRecording();
+    setIsPaused(true);
   };
 
   // Continuar Gravação
   const resumeRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.resume();
-      startTimeRef.current = Date.now();
-      setIsPaused(false);
-      requestScreenWakeLock();
-    }
+    recordingEngine.resumeRecording();
+    setIsPaused(false);
   };
 
   // Cancelar Gravação
-  const cancelRecording = () => {
-    if (confirm("Deseja cancelar a gravação atual? O áudio será descartado.")) {
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-      }
+  const cancelRecording = async () => {
+    if (confirm("Deseja cancelar a gravação atual? O áudio atual será encerrado.")) {
+      try {
+        await recordingEngine.finishMeeting();
+      } catch (e) {}
       setIsRecording(false);
       setIsPaused(false);
-      setSeconds(0);
-      startTimeRef.current = 0;
-      accumulatedTimeRef.current = 0;
-      audioChunksRef.current = [];
-      releaseScreenWakeLock();
-      stopAudioKeepAlive();
     }
   };
 
+
   // Finalizar e Gerar Resumo Automático da Gravação
   const finishRecording = async () => {
-    if (!mediaRecorderRef.current) return;
-
-    if (startTimeRef.current > 0) {
-      accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-      startTimeRef.current = 0;
-    }
-    const duration = Math.max(1, Math.floor(accumulatedTimeRef.current / 1000));
-    setSeconds(duration);
-
-    setProcessingStatus("Salvando áudio gravado...");
-    mediaRecorderRef.current.stop();
-    mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-
-    releaseScreenWakeLock();
-    stopAudioKeepAlive();
-
-    const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-    const meetingTitle =
-      title.trim() || `Reunião Gravada - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
-    const newMeetingId = `m-${Date.now()}`;
-
-    const initialDetails: CompleteMeetingDetails = {
-      meeting: {
-        id: newMeetingId,
-        user_id: "u-001",
-        title: meetingTitle,
-        description: "Gravação presencial / online processada via IA.",
-        meeting_date: new Date().toISOString(),
-        duration_seconds: duration,
-        source_type: "recording",
-        status: "TRANSCREVENDO",
-        error_message: null,
-        tags: ["Gravação Direta"],
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      highlights: [],
-      decisions: [],
-      tasks: [],
-      pending_items: [],
-      risks: [],
-      opportunities: [],
-      values: [],
-      dates: [],
-      quotes: [],
-      next_steps_agreed: [],
-      next_steps_ai_suggestions: [],
-    };
-
-    saveLocalMeeting(initialDetails);
+    if (!confirm("Tem certeza de que deseja encerrar a gravação?")) return;
 
     try {
-      setProcessingStatus("Transcrevendo fala da gravação...");
-      const transcriptData = await processAudioTranscription(audioBlob, "gravacao_reuniao.webm");
+      setProcessingStatus("Salvando e finalizando captura de áudio...");
+      const engineResult = await recordingEngine.finishMeeting();
 
-      setProcessingStatus("IA gerando resumo executivo, decisões e tarefas...");
+      const duration = engineResult.durationSeconds;
+      const audioBlob = engineResult.audioBlob;
+      const newMeetingId = engineResult.meetingId;
+      const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+
+      const initialDetails: CompleteMeetingDetails = {
+        meeting: {
+          id: newMeetingId,
+          user_id: "u-001",
+          title: meetingTitle,
+          description: "Gravação presencial rápida iniciada pelo dashboard principal.",
+          meeting_date: new Date().toISOString(),
+          duration_seconds: duration,
+          source_type: "recording",
+          status: "TRANSCREVENDO",
+          error_message: null,
+          tags: ["Presencial", "Rápida"],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        highlights: [],
+        decisions: [],
+        tasks: [],
+        pending_items: [],
+        risks: [],
+        opportunities: [],
+        values: [],
+        dates: [],
+        quotes: [],
+        next_steps_agreed: [],
+        next_steps_ai_suggestions: [],
+      };
+
+      saveLocalMeeting(initialDetails);
+
+      setProcessingStatus("Transcrevendo áudio com IA...");
+      const transcriptData = await processAudioTranscription(audioBlob, "gravacao_rapida.webm");
+
+      setProcessingStatus("Gerando resumo executivo, decisões e tarefas com IA...");
       const aiData = await processAIAnalysis(transcriptData.raw_text, transcriptData.segments);
+
+
 
       const formattedTasks = (aiData.tasks || []).map((t, idx) => ({
         id: `task-${Date.now()}-${idx}`,
@@ -485,77 +440,79 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
   );
 
   return (
-    <div className="w-full space-y-6 animate-fadeIn">
+    <div className="w-full max-w-full space-y-4 sm:space-y-6 animate-fadeIn overflow-x-hidden">
       {/* Toast Notification Floating */}
       {toastMessage && (
-        <div className="fixed top-20 right-6 z-50 p-4 rounded-2xl bg-emerald-600 text-white font-bold text-xs shadow-2xl flex items-center gap-2 animate-bounce">
-          <Check className="w-4 h-4" />
-          <span>{toastMessage}</span>
+        <div className="fixed top-16 right-4 left-4 sm:left-auto sm:right-6 z-50 p-3.5 rounded-2xl bg-emerald-600 text-white font-bold text-xs shadow-2xl flex items-center justify-center gap-2 animate-bounce">
+          <Check className="w-4 h-4 shrink-0" />
+          <span className="truncate">{toastMessage}</span>
         </div>
       )}
 
-      {/* Top Header Card com Alternador de Abas */}
-      <div className="p-6 rounded-3xl glass-card border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></span>
-            <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">Inteligência de Reuniões</span>
+      {/* Top Header Card com Alternador de Abas em Container Único Compacto */}
+      <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-3.5 shadow-xl w-full max-w-full overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
+              <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-indigo-400">Inteligência de Reuniões</span>
+            </div>
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tight">Marca Meet</h1>
+            <p className="text-xs text-slate-400">Grave reuniões ao vivo ou consulte a análise completa com IA.</p>
           </div>
-          <h1 className="text-2xl md:text-3xl font-black text-white">Marca Meet</h1>
-          <p className="text-xs text-slate-400">Grave reuniões ao vivo ou consulte a análise completa com IA.</p>
         </div>
 
-        {/* Abas Principais: RESUMO | TRANSCRIÇÃO | GRAVAR */}
-        <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-slate-900 border border-slate-800">
+        {/* Container Único Compacto para Todos os Botões */}
+        <div className="p-1 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-1 w-full max-w-full overflow-hidden shadow-inner">
           <button
             onClick={() => setActiveTab("summary")}
-            className={`py-2.5 px-4 md:px-5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
+            className={`flex-1 py-1.5 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
               activeTab === "summary"
-                ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
+                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <FileText className="w-4 h-4" />
-            <span>RESUMO DA REUNIÃO</span>
+            <FileText className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Resumo</span>
           </button>
 
           <button
             onClick={() => setActiveTab("transcript")}
-            className={`py-2.5 px-4 md:px-5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
+            className={`flex-1 py-1.5 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
               activeTab === "transcript"
-                ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
+                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Search className="w-4 h-4" />
-            <span>TRANSCRIÇÃO</span>
+            <Search className="w-3.5 h-3.5 shrink-0" />
+            <span className="truncate">Transcrição</span>
           </button>
 
           <button
             onClick={() => setActiveTab("record")}
-            className={`py-2.5 px-4 md:px-5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all ${
+            className={`flex-1 py-1.5 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
               activeTab === "record"
-                ? "bg-gradient-to-r from-rose-600 to-indigo-600 text-white shadow-lg shadow-rose-600/30"
+                ? "bg-gradient-to-r from-rose-600 to-indigo-600 text-white shadow-md shadow-rose-600/30"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Mic className="w-4 h-4 text-rose-400" />
-            <span>GRAVAR AO VIVO</span>
+            <Mic className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+            <span className="truncate">Gravar</span>
           </button>
 
           <Link
             href="/online-meet"
-            className="py-2.5 px-4 md:px-5 rounded-xl font-bold text-xs flex items-center gap-2 transition-all bg-indigo-600/90 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 border border-indigo-500/40 active:scale-95"
+            className="flex-1 py-1.5 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all bg-indigo-600/80 hover:bg-indigo-500 text-white border border-indigo-500/30 active:scale-95 whitespace-nowrap"
           >
-            <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-            <span>REUNIÃO ONLINE</span>
+            <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse shrink-0" />
+            <span className="truncate">Online</span>
           </Link>
         </div>
       </div>
 
       {/* ================= ABA 1: GRAVAR REUNIÃO ================= */}
       {activeTab === "record" && (
-        <div className="p-8 rounded-3xl glass-card border border-slate-800 space-y-6 shadow-2xl animate-fadeIn">
+        <div className="p-4 sm:p-6 md:p-8 rounded-3xl glass-card border border-slate-800 space-y-6 shadow-2xl animate-fadeIn w-full max-w-full overflow-hidden">
           {processingStatus ? (
             <div className="py-12 text-center space-y-4">
               <div className="w-16 h-16 rounded-2xl bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center mx-auto animate-spin">
@@ -706,9 +663,9 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
       {activeTab === "summary" && (
         <div className="space-y-6 animate-fadeIn">
           {/* Seletor de Reuniões Gravadas */}
-          <div className="p-4 rounded-2xl glass-card border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="p-4 rounded-2xl glass-card border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 w-full max-w-full overflow-hidden">
             <div className="flex items-center gap-2">
-              <History className="w-4 h-4 text-indigo-400" />
+              <History className="w-4 h-4 text-indigo-400 shrink-0" />
               <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
                 Selecione a Reunião Gravada:
               </span>
@@ -723,7 +680,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                   const found = meetings.find((m) => m.meeting.id === e.target.value);
                   if (found) setSelectedMeeting(found);
                 }}
-                className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-semibold focus:outline-none focus:border-indigo-500 max-w-md w-full sm:w-auto"
+                className="px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-semibold focus:outline-none focus:border-indigo-500 max-w-full w-full sm:w-auto truncate"
               >
                 {meetings.map((m) => (
                   <option key={m.meeting.id} value={m.meeting.id}>
@@ -735,7 +692,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
           </div>
 
           {!selectedMeeting ? (
-            <div className="p-16 rounded-3xl glass-card border border-slate-800 text-center space-y-4">
+            <div className="p-8 sm:p-16 rounded-3xl glass-card border border-slate-800 text-center space-y-4 w-full max-w-full overflow-hidden">
               <FileText className="w-14 h-14 text-slate-600 mx-auto" />
               <div className="space-y-1">
                 <h3 className="text-base font-bold text-slate-200">Nenhuma reunião selecionada</h3>
@@ -749,9 +706,9 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               </button>
             </div>
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-6 w-full max-w-full overflow-hidden">
               {/* Header da Reunião Selecionada */}
-              <div className="p-6 rounded-3xl glass-card border border-indigo-500/20 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="p-4 sm:p-6 rounded-3xl glass-card border border-indigo-500/20 flex flex-col md:flex-row md:items-center justify-between gap-4 w-full max-w-full overflow-hidden">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
                     <span className="px-2.5 py-0.5 rounded text-[10px] font-bold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
@@ -856,16 +813,16 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               <MediaPlayer seekToTime={seekTime} />
 
               {/* Card 1: Resumo Executivo */}
-              <div className="p-6 rounded-3xl glass-card border border-indigo-500/20 space-y-3">
+              <div className="p-4 sm:p-6 rounded-3xl glass-card border border-indigo-500/20 space-y-3 w-full max-w-full overflow-hidden">
                 <div className="flex items-center gap-2 text-indigo-400 font-bold text-sm">
                   <Sparkles className="w-4 h-4" />
                   <h3 className="uppercase tracking-wider">Resumo Executivo</h3>
                 </div>
-                <p className="text-sm text-slate-200 leading-relaxed">
+                <p className="text-sm text-slate-200 leading-relaxed break-words">
                   <strong className="text-white">Objetivo: </strong>
                   {selectedMeeting.summary?.objective || "Não especificado."}
                 </p>
-                <p className="text-sm text-slate-300 leading-relaxed">
+                <p className="text-sm text-slate-300 leading-relaxed break-words">
                   <strong className="text-white">Conclusão: </strong>
                   {selectedMeeting.summary?.conclusions || "Sem conclusões registradas."}
                 </p>
@@ -875,7 +832,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                     <span className="text-xs font-semibold text-slate-400 block mb-1">Principais Tópicos Discutidos:</span>
                     <ul className="list-disc list-inside text-xs text-slate-300 space-y-1">
                       {selectedMeeting.summary.key_topics.map((topic, i) => (
-                        <li key={i}>{topic}</li>
+                        <li key={i} className="break-words">{topic}</li>
                       ))}
                     </ul>
                   </div>
@@ -883,12 +840,12 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               </div>
 
               {/* Grid 2 Colunas: Decisões Tomadas & Pontos Importantes */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full max-w-full">
                 {/* Decisões Tomadas */}
-                <div className="p-6 rounded-3xl glass-card border border-emerald-500/20 space-y-4">
+                <div className="p-4 sm:p-6 rounded-3xl glass-card border border-emerald-500/20 space-y-4 w-full max-w-full overflow-hidden">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-2">
-                      <Award className="w-4 h-4" />
+                      <Award className="w-4 h-4 shrink-0" />
                       <span>Decisões Tomadas</span>
                     </h3>
                     <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
@@ -902,7 +859,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                     <div className="space-y-2.5">
                       {selectedMeeting.decisions.map((d) => (
                         <div key={d.id} className="p-3.5 rounded-2xl bg-slate-900/80 border border-emerald-500/20 space-y-1">
-                          <p className="text-xs font-semibold text-slate-100">• {d.decision_text}</p>
+                          <p className="text-xs font-semibold text-slate-100 break-words">• {d.decision_text}</p>
                           {d.timestamp_start !== undefined && (
                             <button
                               onClick={() => {
@@ -922,10 +879,10 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 </div>
 
                 {/* Pontos Importantes (Highlights) */}
-                <div className="p-6 rounded-3xl glass-card border border-purple-500/20 space-y-4">
+                <div className="p-4 sm:p-6 rounded-3xl glass-card border border-purple-500/20 space-y-4 w-full max-w-full overflow-hidden">
                   <div className="flex items-center justify-between">
                     <h3 className="text-sm font-bold uppercase tracking-wider text-purple-400 flex items-center gap-2">
-                      <Sparkles className="w-4 h-4" />
+                      <Sparkles className="w-4 h-4 shrink-0" />
                       <span>Pontos Importantes</span>
                     </h3>
                     <span className="text-xs font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
@@ -939,7 +896,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                     <div className="space-y-2.5">
                       {selectedMeeting.highlights.map((h) => (
                         <div key={h.id} className="p-3.5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-1">
-                          <p className="text-xs text-slate-200">{h.description}</p>
+                          <p className="text-xs text-slate-200 break-words">{h.description}</p>
                           {h.timestamp_start !== undefined && (
                             <button
                               onClick={() => setSeekTime(h.timestamp_start ?? null)}
@@ -957,10 +914,10 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               </div>
 
               {/* Card 3: Tarefas Mapeadas */}
-              <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
+              <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4 w-full max-w-full overflow-hidden">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4" />
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
                     <span>Tarefas Mapeadas</span>
                   </h3>
                   <span className="text-xs font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
@@ -975,8 +932,8 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                     {selectedMeeting.tasks.map((task) => (
                       <div key={task.id} className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
                         <div className="flex items-start justify-between gap-2">
-                          <h4 className="font-bold text-slate-100 text-xs">{task.title}</h4>
-                          <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-500/20 text-amber-300">
+                          <h4 className="font-bold text-slate-100 text-xs break-words">{task.title}</h4>
+                          <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-500/20 text-amber-300 shrink-0">
                             {task.priority}
                           </span>
                         </div>
@@ -1002,16 +959,16 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               </div>
 
               {/* Grid 3 Colunas: Pendências, Riscos & Oportunidades */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 w-full max-w-full">
                 {/* Pendências */}
-                <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
+                <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-3 w-full max-w-full overflow-hidden">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-rose-400">Pendências</h3>
                   {selectedMeeting.pending_items.length === 0 ? (
                     <p className="text-xs text-slate-400">Sem pendências abertas.</p>
                   ) : (
                     <ul className="space-y-2 text-xs text-slate-300">
                       {selectedMeeting.pending_items.map((p) => (
-                        <li key={p.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-rose-500/20">
+                        <li key={p.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-rose-500/20 break-words">
                           • {p.item_text}
                         </li>
                       ))}
@@ -1020,7 +977,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 </div>
 
                 {/* Riscos */}
-                <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
+                <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-3 w-full max-w-full overflow-hidden">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-amber-400">Riscos e Alertas</h3>
                   {selectedMeeting.risks.length === 0 ? (
                     <p className="text-xs text-slate-400">Nenhum risco detectado.</p>
@@ -1028,7 +985,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                     <div className="space-y-2 text-xs">
                       {selectedMeeting.risks.map((r) => (
                         <div key={r.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-amber-500/20 space-y-1">
-                          <p className="text-slate-200">{r.description}</p>
+                          <p className="text-slate-200 break-words">{r.description}</p>
                           {r.is_ai_generated && (
                             <span className="text-[9px] font-semibold text-indigo-400 block">
                               Identificado pela IA
@@ -1041,7 +998,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 </div>
 
                 {/* Oportunidades */}
-                <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
+                <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-3 w-full max-w-full overflow-hidden">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400">Oportunidades</h3>
                   {selectedMeeting.opportunities.length === 0 ? (
                     <p className="text-xs text-slate-400">Nenhuma oportunidade listada.</p>
@@ -1050,7 +1007,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                       {selectedMeeting.opportunities.map((op) => (
                         <div key={op.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-emerald-500/20">
                           <span className="text-[9px] font-bold uppercase text-emerald-400 block mb-0.5">{op.category}</span>
-                          <p className="text-slate-200">{op.description}</p>
+                          <p className="text-slate-200 break-words">{op.description}</p>
                         </div>
                       ))}
                     </div>
@@ -1060,16 +1017,16 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
 
               {/* Valores Monetários Mencionados */}
               {selectedMeeting.values && selectedMeeting.values.length > 0 && (
-                <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
+                <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-3 w-full max-w-full overflow-hidden">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-400 flex items-center gap-1.5">
-                    <DollarSign className="w-4 h-4 text-emerald-400" />
+                    <DollarSign className="w-4 h-4 text-emerald-400 shrink-0" />
                     <span>Valores Monetários Mencionados</span>
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                     {selectedMeeting.values.map((val) => (
                       <div key={val.id} className="p-3 rounded-2xl bg-slate-900/80 border border-indigo-500/20">
                         <span className="text-base font-black text-emerald-400">{val.amount_formatted}</span>
-                        <p className="text-xs text-slate-300 mt-1">{val.context}</p>
+                        <p className="text-xs text-slate-300 mt-1 break-words">{val.context}</p>
                       </div>
                     ))}
                   </div>
@@ -1084,7 +1041,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
       {activeTab === "transcript" && selectedMeeting && (
         <div className="space-y-6 animate-fadeIn">
           {/* Painel de Participantes & Busca */}
-          <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
+          <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4 w-full max-w-full overflow-hidden">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="relative flex-1">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
@@ -1098,7 +1055,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               </div>
 
               <div className="flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-indigo-400" />
+                <UserCheck className="w-4 h-4 text-indigo-400 shrink-0" />
                 <span className="text-xs font-semibold text-slate-300">Mapeamento de Fala:</span>
               </div>
             </div>
@@ -1145,7 +1102,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
           </div>
 
           {/* Diálogo por Trechos */}
-          <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
+          <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4 w-full max-w-full overflow-hidden">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
               Linha do Tempo do Diálogo ({filteredSegments.length} trechos)
             </h3>
@@ -1153,11 +1110,11 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
             <div className="space-y-4 divide-y divide-slate-800/60">
               {filteredSegments.map((seg) => (
                 <div key={seg.id} className="pt-4 first:pt-0 space-y-1.5 group">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <button
                         onClick={() => setSeekTime(seg.start_time)}
-                        className="px-2.5 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white font-mono text-xs font-bold transition-all border border-indigo-500/30"
+                        className="px-2.5 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white font-mono text-xs font-bold transition-all border border-indigo-500/30 shrink-0"
                         title="Reproduzir áudio deste trecho"
                       >
                         {formatTimestamp(seg.start_time)}
@@ -1172,14 +1129,14 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                         navigator.clipboard.writeText(`"${seg.text}" (${seg.speaker})`);
                         showToast("Trecho copiado!");
                       }}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 text-slate-500 hover:text-white text-xs flex items-center gap-1"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 text-slate-500 hover:text-white text-xs flex items-center gap-1 shrink-0"
                     >
                       <Copy className="w-3 h-3" />
                       <span>Copiar</span>
                     </button>
                   </div>
 
-                  <p className="text-sm text-slate-300 leading-relaxed font-sans pl-2 border-l-2 border-slate-800 group-hover:border-indigo-500 transition-colors">
+                  <p className="text-sm text-slate-300 leading-relaxed font-sans pl-2 border-l-2 border-slate-800 group-hover:border-indigo-500 transition-colors break-words">
                     {seg.text}
                   </p>
                 </div>

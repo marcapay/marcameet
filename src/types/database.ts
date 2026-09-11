@@ -170,3 +170,51 @@ export interface CompleteMeetingDetails {
   next_steps_agreed: string[];
   next_steps_ai_suggestions: string[];
 }
+
+export type ActiveMeetingEngineStatus =
+  | 'idle'
+  | 'starting'
+  | 'recording'
+  | 'background'
+  | 'reconnecting'
+  | 'interrupted'
+  | 'finishing'
+  | 'finished'
+  | 'error';
+
+export type AudioSourceStatus = 'active' | 'ended' | 'interrupted';
+export type MediaRecorderStatus = 'inactive' | 'recording' | 'paused';
+
+export interface ActiveMeetingSessionState {
+  meeting_id: string;
+  session_id: string;
+  user_id?: string;
+  title: string;
+  source_type: MeetingSourceType;
+  status: ActiveMeetingEngineStatus;
+  started_at: string; // ISO string or timestamp
+  started_at_ms: number;
+  last_chunk_at: string;
+  last_activity_at: string;
+  ended_at?: string | null;
+  source_status: AudioSourceStatus;
+  recorder_status: MediaRecorderStatus;
+  accumulated_paused_ms: number;
+  wake_lock_enabled: boolean;
+  transcript_draft?: string;
+  speaker_map?: Record<string, string>;
+  segments_draft?: TranscriptSegment[];
+}
+
+export interface AudioChunkMetadata {
+  id: string; // meeting_id + '_' + session_id + '_' + sequence_number
+  meeting_id: string;
+  session_id: string;
+  sequence_number: number;
+  timestamp_start: number;
+  duration_seconds: number;
+  blob?: Blob;
+  status: 'pending_local' | 'uploading' | 'uploaded' | 'error';
+  created_at: string;
+}
+

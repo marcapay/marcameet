@@ -17,7 +17,7 @@ export function Header() {
   ];
 
   return (
-    <header className="sticky top-0 z-40 w-full border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md px-4 lg:px-8 py-3.5 flex items-center justify-between">
+    <header className="sticky top-0 z-40 w-full max-w-full overflow-hidden border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md px-3.5 sm:px-4 lg:px-8 py-3.5 flex items-center justify-between">
       {/* Brand / Logo (Ícone de Microfone) */}
       <Link href="/" className="flex items-center gap-2.5 group">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition-transform">

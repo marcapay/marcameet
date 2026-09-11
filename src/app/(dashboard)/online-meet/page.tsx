@@ -29,6 +29,8 @@ import {
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
+import { recordingEngine } from "@/lib/audio/recordingEngine";
+
 
 export type OnlineMeetingStatus =
   | "Aguardando início"
@@ -94,24 +96,55 @@ export default function OnlineMeetingPage() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  // Cronômetro da Reunião
-  useEffect(() => {
-    if (step === "recording" && !isPaused && meetingStatus === "Capturando áudio") {
-      timerIntervalRef.current = setInterval(() => {
-        if (startTimeRef.current > 0) {
-          const now = Date.now();
-          const totalMs = accumulatedTimeRef.current + (now - startTimeRef.current);
-          setSeconds(Math.floor(totalMs / 1000));
-        }
-      }, 500);
+  const [showConfirmFinishModal, setShowConfirmFinishModal] = useState(false);
 
-      return () => {
-        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-      };
-    } else {
-      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+  // Subscrever a eventos da Engine Central de Gravação
+  useEffect(() => {
+    const unsubscribe = recordingEngine.subscribe({
+      onStatusChange: (status, session) => {
+        if (session && session.source_type === "online_meeting") {
+          setStep("recording");
+          if (status === "interrupted") {
+            setMeetingStatus("Áudio interrompido");
+          } else if (session.recorder_status === "paused") {
+            setMeetingStatus("Pausado");
+            setIsPaused(true);
+          } else if (status === "recording" || status === "background") {
+            setMeetingStatus("Capturando áudio");
+            setIsPaused(false);
+          }
+        }
+      },
+      onTimerTick: (sec) => {
+        setSeconds(sec);
+      },
+      onChunkCaptured: async (blob) => {
+        await processAudioChunk(blob);
+      },
+      onSourceInterrupted: () => {
+        handleAudioInterrupted();
+      },
+    });
+
+    const active = recordingEngine.getActiveSession();
+    if (active && active.source_type === "online_meeting") {
+      setStep("recording");
+      setMeetingTitle(active.title);
+      meetingIdRef.current = active.meeting_id;
+      setSeconds(recordingEngine.getElapsedSeconds());
+      setIsPaused(active.recorder_status === "paused");
+      if (active.source_status === "ended") {
+        setMeetingStatus("Áudio interrompido");
+      } else {
+        setMeetingStatus(active.recorder_status === "paused" ? "Pausado" : "Capturando áudio");
+      }
     }
-  }, [step, isPaused, meetingStatus]);
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
 
   // Rolagem Automática ao receber novas falas
   useEffect(() => {
@@ -156,13 +189,9 @@ export default function OnlineMeetingPage() {
       return;
     }
 
-    if (!hasConfiguredApiKey()) {
-      alert("⚠️ Nenhuma API Key configurada! Acesse as Configurações e insira sua chave de API antes de iniciar.");
-      return;
-    }
-
     setErrorMessage(null);
     setMeetingStatus("Solicitando compartilhamento");
+
 
     try {
       // Solicitar compartilhamento da aba/janela do navegador com áudio
@@ -232,30 +261,16 @@ export default function OnlineMeetingPage() {
         }
       }
 
-      // Configurar MediaRecorder para fatiar o áudio em blocos contínuos de 8 segundos
-      let mimeType = "audio/webm;codecs=opus";
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = "audio/webm";
-      }
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = "audio/ogg";
-      }
+      // Iniciar Gravação através da Engine Central Persistente
+      const meetingId = meetingIdRef.current;
+      await recordingEngine.startRecording({
+        meetingId,
+        title: meetingTitle.trim(),
+        sourceType: "online_meeting",
+        stream: audioOnlyStream,
+        chunkIntervalMs: 8000,
+      });
 
-      const recorder = new MediaRecorder(audioOnlyStream, { mimeType });
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = async (event) => {
-        if (event.data && event.data.size > 0) {
-          await processAudioChunk(event.data);
-        }
-      };
-
-      // Iniciar gravação com fatiamento a cada 8 segundos (8000ms)
-      recorder.start(8000);
-
-      startTimeRef.current = Date.now();
-      accumulatedTimeRef.current = 0;
-      setSeconds(0);
       setStep("recording");
       setMeetingStatus("Capturando áudio");
     } catch (err: any) {
@@ -298,7 +313,11 @@ export default function OnlineMeetingPage() {
             const filteredNew = newLiveSegments.filter(
               (ns) => !prev.some((p) => p.text.toLowerCase() === ns.text.toLowerCase())
             );
-            return [...prev, ...filteredNew];
+            const updated = [...prev, ...filteredNew];
+            // Atualizar rascunho na engine
+            const rawDraft = updated.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n");
+            recordingEngine.updateTranscriptDraft(rawDraft, speakerMap);
+            return updated;
           });
         }
 
@@ -310,7 +329,7 @@ export default function OnlineMeetingPage() {
       console.warn("Erro temporário na transcrição do bloco de áudio:", err);
     } finally {
       isChunkProcessingRef.current = false;
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      if (recordingEngine.isRecordingActive()) {
         setMeetingStatus("Capturando áudio");
       }
     }
@@ -319,60 +338,44 @@ export default function OnlineMeetingPage() {
   // Tratamento quando o compartilhamento de áudio é interrompido no navegador
   const handleAudioInterrupted = () => {
     setMeetingStatus("Áudio interrompido");
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (e) {}
-    }
-    if (startTimeRef.current > 0) {
-      accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-      startTimeRef.current = 0;
-    }
     showToast("O compartilhamento de áudio foi interrompido.");
   };
 
   // Controles: Pausar Transcrição
   const pauseTranscription = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.pause();
-      if (startTimeRef.current > 0) {
-        accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-        startTimeRef.current = 0;
-      }
-      setIsPaused(true);
-      setMeetingStatus("Pausado");
-    }
+    recordingEngine.pauseRecording();
+    setIsPaused(true);
+    setMeetingStatus("Pausado");
   };
 
   // Controles: Continuar Transcrição
   const resumeTranscription = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "paused") {
-      mediaRecorderRef.current.resume();
-      startTimeRef.current = Date.now();
-      setIsPaused(false);
-      setMeetingStatus("Capturando áudio");
-    }
+    recordingEngine.resumeRecording();
+    setIsPaused(false);
+    setMeetingStatus("Capturando áudio");
   };
 
-  // Etapa 5: Finalizar Reunião & Executar Análise com Inteligência Artificial
-  const finishMeeting = async () => {
-    if (!confirm("Deseja encerrar a captura e finalizar a reunião online com análise por IA?")) return;
+  // Solicitar encerramento da reunião online
+  const requestFinishMeeting = () => {
+    setShowConfirmFinishModal(true);
+  };
 
+  // Etapa 5: Finalizar Reunião Definitivamente via finishMeeting()
+  const finishMeeting = async () => {
+    setShowConfirmFinishModal(false);
     setIsAnalyzingAI(true);
-    setAnalyzingStatus("Encerrando captura de áudio e organizando a transcrição...");
+    setAnalyzingStatus("Encerrando captura de áudio e finalizando a reunião...");
     setMeetingStatus("Finalizado");
 
-    if (startTimeRef.current > 0) {
-      accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-      startTimeRef.current = 0;
-    }
-    const finalDuration = Math.max(1, Math.floor(accumulatedTimeRef.current / 1000));
-    setSeconds(finalDuration);
+    let finalDuration = seconds;
+    let meetingId = meetingIdRef.current;
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      try {
-        mediaRecorderRef.current.stop();
-      } catch (e) {}
+    try {
+      const engineResult = await recordingEngine.finishMeeting();
+      finalDuration = engineResult.durationSeconds;
+      meetingId = engineResult.meetingId;
+    } catch (err) {
+      console.warn("Aviso ao encerrar engine:", err);
     }
 
     if (speechRecognitionRef.current) {
@@ -385,10 +388,10 @@ export default function OnlineMeetingPage() {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
     }
 
-    const meetingId = meetingIdRef.current;
     const fullRawText = segments.length > 0
       ? segments.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n")
       : "Reunião finalizada sem trecho de fala gravado.";
+
 
     let aiData: any = null;
 
@@ -747,7 +750,7 @@ export default function OnlineMeetingPage() {
                   )}
 
                   <button
-                    onClick={finishMeeting}
+                    onClick={requestFinishMeeting}
                     className="px-4 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all active:scale-95"
                   >
                     <Square className="w-4 h-4 fill-white" />

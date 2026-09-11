@@ -3,11 +3,28 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Mic, Square, Pause, Play, X, Check, Sparkles, AlertCircle, FileText, Tag, Calendar, KeyRound, AlertTriangle } from "lucide-react";
+import {
+  Mic,
+  Square,
+  Pause,
+  Play,
+  X,
+  Check,
+  Sparkles,
+  AlertCircle,
+  FileText,
+  Tag,
+  Calendar,
+  KeyRound,
+  AlertTriangle,
+  RefreshCw,
+  Shield,
+  Smartphone
+} from "lucide-react";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
-import { requestScreenWakeLock, releaseScreenWakeLock, startAudioKeepAlive, stopAudioKeepAlive } from "@/lib/audio/recordingKeepAlive";
-import { CompleteMeetingDetails } from "@/types/database";
+import { CompleteMeetingDetails, ActiveMeetingEngineStatus } from "@/types/database";
+import { recordingEngine } from "@/lib/audio/recordingEngine";
 
 export default function RecordPage() {
   const router = useRouter();
@@ -17,58 +34,62 @@ export default function RecordPage() {
   const [description, setDescription] = useState("");
   const [tagsInput, setTagsInput] = useState("Presencial, Alinhamento");
 
-  // Estado da Gravação
+  // Opções de gravação
+  const [wakeLockEnabled, setWakeLockEnabled] = useState(true);
+
+  // Estado da Gravação & Engine
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [engineStatus, setEngineStatus] = useState<ActiveMeetingEngineStatus>("idle");
+  const [sourceEnded, setSourceEnded] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
+
+  // Modais de Confirmação
+  const [showConfirmFinishModal, setShowConfirmFinishModal] = useState(false);
 
   // Verificação da API Key Obrigatória
   const [apiKeyMissing, setApiKeyMissing] = useState(false);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const accumulatedTimeRef = useRef<number>(0);
-
   useEffect(() => {
     setApiKeyMissing(!hasConfiguredApiKey());
-  }, []);
 
-  // Atualizar cronômetro em tempo real baseado em Date.now()
-  const updateTimer = () => {
-    if (startTimeRef.current > 0) {
-      const now = Date.now();
-      const totalMs = accumulatedTimeRef.current + (now - startTimeRef.current);
-      setSeconds(Math.floor(totalMs / 1000));
-    }
-  };
-
-  // Controle de Cronômetro com sincronização em tempo real e reativação em tela ativa (visibilitychange)
-  useEffect(() => {
-    if (isRecording && !isPaused) {
-      timerRef.current = setInterval(() => {
-        updateTimer();
-      }, 500);
-
-      const handleVisibilityChange = () => {
-        if (document.visibilityState === "visible") {
-          updateTimer();
-          requestScreenWakeLock();
+    // Subscrever a eventos da engine central de gravação
+    const unsubscribe = recordingEngine.subscribe({
+      onStatusChange: (status, session) => {
+        setEngineStatus(status);
+        if (session) {
+          setIsRecording(status === "recording" || status === "background" || status === "interrupted" || status === "reconnecting");
+          setIsPaused(session.recorder_status === "paused");
+          setSourceEnded(session.source_status === "ended");
+        } else {
+          setIsRecording(false);
+          setIsPaused(false);
+          setSourceEnded(false);
         }
-      };
+      },
+      onTimerTick: (sec) => {
+        setSeconds(sec);
+      },
+      onSourceInterrupted: (reason) => {
+        console.warn("Entrada de áudio interrompida:", reason);
+        setSourceEnded(true);
+      },
+    });
 
-      document.addEventListener("visibilitychange", handleVisibilityChange);
-
-      return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-        document.removeEventListener("visibilitychange", handleVisibilityChange);
-      };
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
+    // Se já houver sessão ativa rodando com MediaRecorder vivo
+    const currentSession = recordingEngine.getActiveSession();
+    if (currentSession && currentSession.source_type !== "online_meeting" && recordingEngine.hasLiveRecorder()) {
+      setIsRecording(true);
+      setIsPaused(currentSession.recorder_status === "paused");
+      setSeconds(recordingEngine.getElapsedSeconds());
+      if (currentSession.title) setTitle(currentSession.title);
     }
-  }, [isRecording, isPaused]);
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   // Formatação de Tempo mm:ss / hh:mm:ss
   const formatTimer = (totalSec: number) => {
@@ -83,153 +104,114 @@ export default function RecordPage() {
 
   // Iniciar Gravação
   const startRecording = async () => {
-    if (!hasConfiguredApiKey()) {
-      alert("⚠️ Nenhuma API Key cadastrada! Acesse as Configurações e insira sua chave de API para utilizar a gravação.");
-      router.push("/settings");
-      return;
-    }
-
     try {
-      await requestScreenWakeLock();
-      startAudioKeepAlive();
-
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      audioChunksRef.current = [];
+      const meetingId = `m-${Date.now()}`;
+      const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
-      let mimeType = "audio/webm;codecs=opus";
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = "audio/ogg";
-      }
-
-      const recorder = new MediaRecorder(stream, { mimeType });
-      mediaRecorderRef.current = recorder;
-
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      stream.getAudioTracks().forEach((track) => {
-        track.onended = () => {
-          console.warn("Entrada de áudio encerrada pelo sistema.");
-        };
+      await recordingEngine.startRecording({
+        meetingId,
+        title: meetingTitle,
+        sourceType: "recording",
+        stream,
+        wakeLockEnabled,
+        chunkIntervalMs: 8000,
       });
-
-      recorder.start(1000);
-
-      startTimeRef.current = Date.now();
-      accumulatedTimeRef.current = 0;
 
       setIsRecording(true);
       setIsPaused(false);
-      setSeconds(0);
-    } catch (err) {
+      setSourceEnded(false);
+    } catch (err: any) {
       console.error("Erro ao acessar microfone:", err);
-      alert("Não foi possível acessar o microfone. Verifique as permissões do seu navegador.");
-      releaseScreenWakeLock();
-      stopAudioKeepAlive();
+      alert(`Não foi possível acessar o microfone (${err.message || "Permissão negada"}). Verifique as permissões do seu navegador.`);
+    }
+  };
+
+
+  // Reconectar Microfone após interrupção
+  const reconnectAudioSource = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const current = recordingEngine.getActiveSession();
+      if (current) {
+        await recordingEngine.startRecording({
+          meetingId: current.meeting_id,
+          title: current.title,
+          sourceType: "recording",
+          stream,
+          wakeLockEnabled,
+        });
+        setSourceEnded(false);
+      }
+    } catch (err) {
+      console.error("Erro ao reconectar áudio:", err);
+      alert("Não foi possível reconectar a fonte de áudio.");
     }
   };
 
   // Pausar Gravação
   const pauseRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.pause();
-      if (startTimeRef.current > 0) {
-        accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-        startTimeRef.current = 0;
-      }
-      setIsPaused(true);
-    }
+    recordingEngine.pauseRecording();
+    setIsPaused(true);
   };
 
   // Continuar Gravação
   const resumeRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.resume();
-      startTimeRef.current = Date.now();
-      setIsPaused(false);
-      requestScreenWakeLock();
-    }
+    recordingEngine.resumeRecording();
+    setIsPaused(false);
   };
 
-  // Cancelar Gravação
-  const cancelRecording = () => {
-    if (confirm("Deseja realmente cancelar a gravação? O áudio atual será descartado.")) {
-      if (mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-      }
-      setIsRecording(false);
-      setIsPaused(false);
-      setSeconds(0);
-      startTimeRef.current = 0;
-      accumulatedTimeRef.current = 0;
-      audioChunksRef.current = [];
-      releaseScreenWakeLock();
-      stopAudioKeepAlive();
-    }
+  // Solicitar Encerramento (Abre Modal de Confirmação)
+  const requestFinishMeeting = () => {
+    setShowConfirmFinishModal(true);
   };
 
-  // Finalizar e Processar
-  const finishRecording = async () => {
-    if (!mediaRecorderRef.current) return;
-
-    if (startTimeRef.current > 0) {
-      accumulatedTimeRef.current += Date.now() - startTimeRef.current;
-      startTimeRef.current = 0;
-    }
-    const duration = Math.max(1, Math.floor(accumulatedTimeRef.current / 1000));
-    setSeconds(duration);
-
-    // 1. Parar gravação e capturar áudio original
-    setProcessingStatus("Salvando arquivo original de áudio...");
-    mediaRecorderRef.current.stop();
-    mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
-
-    releaseScreenWakeLock();
-    stopAudioKeepAlive();
-
-    const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-    const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
-
-    const newMeetingId = `m-${Date.now()}`;
-    const tagsArray = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
-
-    // Salvar Estrutura Inicial Imediatamente (Zero perda de dados)
-    const initialDetails: CompleteMeetingDetails = {
-      meeting: {
-        id: newMeetingId,
-        user_id: "u-001",
-        title: meetingTitle,
-        description: description || "Gravação presencial iniciada pelo celular/computador.",
-        meeting_date: new Date().toISOString(),
-        duration_seconds: duration,
-        source_type: "recording",
-        status: "TRANSCREVENDO",
-        error_message: null,
-        tags: tagsArray,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      highlights: [],
-      decisions: [],
-      tasks: [],
-      pending_items: [],
-      risks: [],
-      opportunities: [],
-      values: [],
-      dates: [],
-      quotes: [],
-      next_steps_agreed: [],
-      next_steps_ai_suggestions: [],
-    };
-
-    saveLocalMeeting(initialDetails);
+  // Executar Encerramento Definitivo com finishMeeting() Centralizado
+  const handleConfirmFinishMeeting = async () => {
+    setShowConfirmFinishModal(false);
+    setProcessingStatus("Encerrando captura e organizando os blocos de áudio gravados...");
 
     try {
-      // 2. Iniciar Transcrição
+      const result = await recordingEngine.finishMeeting();
+
+      const newMeetingId = result.meetingId;
+      const duration = result.durationSeconds;
+      const audioBlob = result.audioBlob;
+      const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+      const tagsArray = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
+
+      // Salvar Estrutura Inicial Imediatamente (Zero perda de dados)
+      const initialDetails: CompleteMeetingDetails = {
+        meeting: {
+          id: newMeetingId,
+          user_id: "u-001",
+          title: meetingTitle,
+          description: description || "Gravação presencial iniciada pelo celular/computador.",
+          meeting_date: new Date().toISOString(),
+          duration_seconds: duration,
+          source_type: "recording",
+          status: "TRANSCREVENDO",
+          error_message: null,
+          tags: tagsArray,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        highlights: [],
+        decisions: [],
+        tasks: [],
+        pending_items: [],
+        risks: [],
+        opportunities: [],
+        values: [],
+        dates: [],
+        quotes: [],
+        next_steps_agreed: [],
+        next_steps_ai_suggestions: [],
+      };
+
+      saveLocalMeeting(initialDetails);
+
+      // 2. Iniciar Transcrição com API Key
       setProcessingStatus("Transcrevendo áudio com inteligência de fala da API Key...");
       const transcriptData = await processAudioTranscription(audioBlob, "gravacao_presencial.webm");
 
@@ -351,15 +333,12 @@ export default function RecordPage() {
       };
 
       saveLocalMeeting(finalDetails);
-
-      // Redirecionar DIRETO para a Aba de Resumos (/tasks) exibindo o resumo detalhado feito pela IA
       router.push(`/tasks?meetingId=${newMeetingId}`);
     } catch (e: any) {
-      console.error("Erro durante o processamento por IA:", e);
-      initialDetails.meeting.status = "ERRO";
-      initialDetails.meeting.error_message = e.message || "Ocorreu um erro no processamento por IA.";
-      saveLocalMeeting(initialDetails);
-      router.push(`/tasks?meetingId=${newMeetingId}`);
+      console.error("Erro ao finalizar reunião:", e);
+      alert("Ocorreu um erro ao encerrar a reunião: " + e.message);
+    } finally {
+      setProcessingStatus(null);
     }
   };
 
@@ -373,16 +352,47 @@ export default function RecordPage() {
             <span>Gravação Presencial</span>
           </h1>
           <p className="text-xs text-slate-400">
-            Grave conversas ao vivo pelo celular ou computador em alta qualidade.
+            Grave conversas ao vivo em segundo plano sem perda de dados ao trocar de aba ou apagar a tela.
           </p>
         </div>
         {isRecording && (
           <span className="px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 animate-pulse">
             <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-            Gravando ao vivo
+            🔴 GRAVANDO
           </span>
         )}
       </div>
+
+      {/* Alerta de Fonte de Áudio Interrompida */}
+      {sourceEnded && (
+        <div className="p-5 rounded-3xl bg-amber-950/80 border border-amber-500/40 text-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-6 h-6 text-amber-400 shrink-0" />
+            <div>
+              <h3 className="font-bold text-sm text-amber-200">A fonte de áudio foi interrompida</h3>
+              <p className="text-xs text-amber-300/80">
+                A captura de áudio do microfone foi encerrada pelo navegador. Toda a transcrição até este momento está 100% preservada.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={reconnectAudioSource}
+              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Reconectar áudio</span>
+            </button>
+            <button
+              onClick={requestFinishMeeting}
+              className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-md transition-all"
+            >
+              <span>Encerrar reunião</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Alerta de API Key Obrigatória Faltando */}
       {apiKeyMissing && (
@@ -441,20 +451,34 @@ export default function RecordPage() {
                 INICIAR GRAVAÇÃO
               </button>
               <p className="text-[11px] text-slate-400">
-                Toque no botão para iniciar imediatamente a gravação da reunião presencial.
+                Toque no botão para iniciar a gravação presencial. A gravação continuará ativa mesmo se você trocar de aba ou apagar a tela do celular.
               </p>
             </div>
           </div>
 
-          {/* Campos Opcionais Antes da Gravação */}
+          {/* Opções de Resiliência e Wake Lock */}
           <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
-            <div className="flex items-center gap-2 border-b border-slate-800/80 pb-3">
-              <FileText className="w-4 h-4 text-indigo-400" />
-              <h2 className="text-sm font-bold text-slate-200">Informações Opcionais</h2>
-              <span className="text-[10px] text-slate-400 ml-auto">(Não obrigatório)</span>
+            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
+              <div className="flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-indigo-400" />
+                <h2 className="text-sm font-bold text-slate-200">Manter tela ativa durante a gravação</h2>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={wakeLockEnabled}
+                  onChange={(e) => setWakeLockEnabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
             </div>
+            <p className="text-[11px] text-slate-400">
+              Solicita a Wake Lock API para impedir que a tela do dispositivo bloqueie ou entre em suspensão profunda enquanto a gravação estiver ocorrendo.
+            </p>
 
-            <div className="space-y-3">
+            {/* Campos Opcionais Antes da Gravação */}
+            <div className="space-y-3 pt-2">
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Título da Reunião</label>
                 <input
@@ -498,17 +522,24 @@ export default function RecordPage() {
       {/* Tela de Gravação Ativa */}
       {isRecording && !processingStatus && (
         <div className="p-8 rounded-3xl glass-card border border-rose-500/30 text-center space-y-8 shadow-2xl">
-          {/* Cronômetro */}
+          {/* Cronômetro baseado em Date.now() - started_at */}
           <div className="space-y-2">
-            <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Tempo Decorrido</span>
+            <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Tempo Decorrido Real</span>
             <div className="text-5xl md:text-6xl font-black tracking-tight text-white font-mono">
               {formatTimer(seconds)}
             </div>
-            {isPaused && (
-              <span className="inline-block px-3 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold">
-                PAUSADO
-              </span>
-            )}
+            <div className="flex items-center justify-center gap-2">
+              {isPaused ? (
+                <span className="inline-block px-3 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-xs font-semibold">
+                  PAUSADO
+                </span>
+              ) : (
+                <span className="inline-block px-3 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                  GRAVANDO EM SEGUNDO PLANO
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Equalizador Visual de Gravação */}
@@ -522,8 +553,8 @@ export default function RecordPage() {
             </div>
           )}
 
-          {/* Controles: Pausar, Continuar, Finalizar, Cancelar */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-lg mx-auto">
+          {/* Controles: Pausar, Continuar, Finalizar */}
+          <div className="grid grid-cols-2 gap-3 max-w-md mx-auto">
             {isPaused ? (
               <button
                 onClick={resumeRecording}
@@ -543,20 +574,46 @@ export default function RecordPage() {
             )}
 
             <button
-              onClick={finishRecording}
-              className="col-span-2 flex items-center justify-center gap-2 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-sm shadow-lg shadow-emerald-600/30 transition-all active:scale-95"
+              onClick={requestFinishMeeting}
+              className="flex items-center justify-center gap-2 py-3 px-6 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-sm shadow-lg shadow-rose-600/30 transition-all active:scale-95"
             >
-              <Check className="w-5 h-5" />
-              <span>FINALIZAR E GERAR RESUMO</span>
+              <Square className="w-4 h-4 fill-current" />
+              <span>ENCERRAR REUNIÃO</span>
             </button>
+          </div>
+        </div>
+      )}
 
-            <button
-              onClick={cancelRecording}
-              className="flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-slate-900 hover:bg-rose-950 border border-slate-800 hover:border-rose-500/40 text-slate-300 hover:text-rose-300 font-semibold text-xs transition-all"
-            >
-              <X className="w-4 h-4" />
-              <span>Cancelar</span>
-            </button>
+      {/* Modal Obrigatório de Confirmação para Encerrar Reunião */}
+      {showConfirmFinishModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <h3 className="text-lg font-bold text-white">Tem certeza de que deseja encerrar a gravação?</h3>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              A gravação será encerrada definitivamente e todos os blocos de áudio salvos serão processados para gerar a transcrição e análise executiva com IA.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                onClick={() => setShowConfirmFinishModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs transition-all active:scale-95"
+              >
+                Continuar gravando
+              </button>
+              <button
+                onClick={handleConfirmFinishMeeting}
+                className="flex items-center gap-2 px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all active:scale-95"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                <span>Encerrar reunião</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

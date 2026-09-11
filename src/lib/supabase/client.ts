@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { CompleteMeetingDetails } from '@/types/database';
+import { CompleteMeetingDetails, ActiveMeetingSessionState, AudioChunkMetadata } from '@/types/database';
 import { getStoredKey } from '@/lib/storage/keysStorage';
 
 export function getSupabaseClient(): SupabaseClient | null {
@@ -118,3 +118,144 @@ export async function saveMeetingToSupabase(details: CompleteMeetingDetails): Pr
     return false;
   }
 }
+
+/**
+ * Sincroniza o estado da reunião ativa no Supabase (tabela active_meetings)
+ */
+export async function syncActiveMeetingToSupabase(session: ActiveMeetingSessionState): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return false;
+
+  try {
+    const { error } = await client.from('active_meetings').upsert({
+      meeting_id: session.meeting_id,
+      session_id: session.session_id,
+      title: session.title,
+      source_type: session.source_type,
+      status: session.status,
+      started_at: session.started_at,
+      last_chunk_at: session.last_chunk_at,
+      last_activity_at: new Date().toISOString(),
+      ended_at: session.ended_at || null,
+      source_status: session.source_status,
+      recorder_status: session.recorder_status,
+      accumulated_paused_ms: session.accumulated_paused_ms || 0,
+      wake_lock_enabled: session.wake_lock_enabled ?? true,
+      transcript_draft: session.transcript_draft || '',
+      speaker_map: session.speaker_map || {},
+      segments_draft: session.segments_draft || [],
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'meeting_id' });
+
+    if (error) {
+      console.warn("Aviso ao sincronizar reunião ativa no Supabase:", error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn("Erro ao sincronizar reunião ativa no Supabase:", err);
+    return false;
+  }
+}
+
+/**
+ * Registra um bloco de áudio no Supabase rejeitando duplicidades (Chave Única: meeting_id + session_id + sequence_number)
+ */
+export async function uploadAudioChunkDeduplicated(chunk: AudioChunkMetadata): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return false;
+
+  try {
+    const chunkId = chunk.id || `${chunk.meeting_id}_${chunk.session_id}_${chunk.sequence_number}`;
+
+    const { error } = await client.from('audio_chunks').upsert({
+      id: chunkId,
+      meeting_id: chunk.meeting_id,
+      session_id: chunk.session_id,
+      sequence_number: chunk.sequence_number,
+      timestamp_start: chunk.timestamp_start,
+      duration_seconds: chunk.duration_seconds || 8.0,
+      status: 'uploaded',
+      created_at: chunk.created_at || new Date().toISOString(),
+    }, { onConflict: 'id' });
+
+    if (error) {
+      console.warn("Aviso ao registrar chunk no Supabase (duplicidade/erro):", error.message);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn("Erro ao registrar chunk no Supabase:", err);
+    return false;
+  }
+}
+
+/**
+ * Busca uma reunião ativa no Supabase (com status diferente de 'finished')
+ */
+export async function fetchActiveMeetingFromSupabase(meetingId?: string): Promise<ActiveMeetingSessionState | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  try {
+    let query = client.from('active_meetings').select('*');
+    if (meetingId) {
+      query = query.eq('meeting_id', meetingId);
+    } else {
+      query = query.neq('status', 'finished').order('updated_at', { ascending: false }).limit(1);
+    }
+
+    const { data, error } = await query;
+    if (error || !data || data.length === 0) return null;
+
+    const row = data[0];
+    return {
+      meeting_id: row.meeting_id,
+      session_id: row.session_id,
+      user_id: row.user_id,
+      title: row.title,
+      source_type: row.source_type,
+      status: row.status,
+      started_at: row.started_at,
+      started_at_ms: new Date(row.started_at).getTime(),
+      last_chunk_at: row.last_chunk_at,
+      last_activity_at: row.last_activity_at,
+      ended_at: row.ended_at,
+      source_status: row.source_status,
+      recorder_status: row.recorder_status,
+      accumulated_paused_ms: row.accumulated_paused_ms || 0,
+      wake_lock_enabled: row.wake_lock_enabled ?? true,
+      transcript_draft: row.transcript_draft || '',
+      speaker_map: row.speaker_map || {},
+      segments_draft: row.segments_draft || [],
+    };
+  } catch (err) {
+    console.warn("Erro ao buscar reunião ativa do Supabase:", err);
+    return null;
+  }
+}
+
+/**
+ * Finaliza a reunião ativa no Supabase
+ */
+export async function closeActiveMeetingInSupabase(meetingId: string): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client) return false;
+
+  try {
+    const { error } = await client
+      .from('active_meetings')
+      .update({
+        status: 'finished',
+        ended_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('meeting_id', meetingId);
+
+    return !error;
+  } catch (err) {
+    console.warn("Erro ao encerrar reunião ativa no Supabase:", err);
+    return false;
+  }
+}
+

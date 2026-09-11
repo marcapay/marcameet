@@ -322,54 +322,54 @@ export default function MeetingDetailPage() {
       {/* Player Integrado */}
       <MediaPlayer seekToTime={seekTime} />
 
-      {/* Abas Principais */}
-      <div className="flex items-center border-b border-slate-800 gap-2 overflow-x-auto">
+      {/* Abas Principais em Container Único Compacto */}
+      <div className="p-1 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-1 w-full max-w-full overflow-hidden shadow-inner">
         <button
           onClick={() => setActiveTab("summary")}
-          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+          className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
             activeTab === "summary"
-              ? "border-indigo-500 text-indigo-400"
-              : "border-transparent text-slate-400 hover:text-slate-200"
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+              : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <Sparkles className="w-4 h-4" />
-          <span>Análise com IA</span>
+          <Sparkles className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Análise IA</span>
         </button>
 
         <button
           onClick={() => setActiveTab("chat")}
-          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 whitespace-nowrap ${
+          className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
             activeTab === "chat"
-              ? "border-indigo-500 text-indigo-400"
-              : "border-transparent text-slate-400 hover:text-slate-200"
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+              : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <MessageSquare className="w-4 h-4 text-purple-400" />
-          <span>Conversar com IA</span>
+          <MessageSquare className="w-3.5 h-3.5 text-purple-300 shrink-0" />
+          <span className="truncate">Chat IA</span>
         </button>
 
         <button
           onClick={() => setActiveTab("transcript")}
-          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${
+          className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
             activeTab === "transcript"
-              ? "border-indigo-500 text-indigo-400"
-              : "border-transparent text-slate-400 hover:text-slate-200"
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+              : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <FileText className="w-4 h-4" />
-          <span>Transcrição Completa</span>
+          <FileText className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Transcrição</span>
         </button>
 
         <button
           onClick={() => setActiveTab("export")}
-          className={`py-3 px-5 text-sm font-bold border-b-2 transition-all flex items-center gap-2 ${
+          className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
             activeTab === "export"
-              ? "border-indigo-500 text-indigo-400"
-              : "border-transparent text-slate-400 hover:text-slate-200"
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+              : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <Download className="w-4 h-4" />
-          <span>Exportação</span>
+          <Download className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Exportar</span>
         </button>
       </div>
 
