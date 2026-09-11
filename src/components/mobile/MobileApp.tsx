@@ -439,6 +439,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
       seg.speaker.toLowerCase().includes(transcriptSearch.toLowerCase())
   );
 
+  // MobileApp Dashboard View - Compact Container Layout
   return (
     <div className="w-full max-w-full space-y-4 sm:space-y-6 animate-fadeIn overflow-x-hidden">
       {/* Toast Notification Floating */}
