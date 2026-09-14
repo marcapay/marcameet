@@ -200,6 +200,7 @@ export interface ActiveMeetingSessionState {
   source_status: AudioSourceStatus;
   recorder_status: MediaRecorderStatus;
   accumulated_paused_ms: number;
+  paused_at_ms?: number;
   wake_lock_enabled: boolean;
   transcript_draft?: string;
   speaker_map?: Record<string, string>;

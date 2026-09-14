@@ -91,10 +91,17 @@ export function ActiveMeetingBanner() {
       {!isOnRecordingPage && (
         <div className="bg-gradient-to-r from-rose-900/90 via-indigo-900/90 to-purple-900/90 border-b border-rose-500/30 text-white px-4 py-2.5 shadow-xl backdrop-blur-md sticky top-16 z-30 flex flex-col sm:flex-row items-center justify-between gap-3 animate-fadeIn">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold animate-pulse">
-              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-              <span>🔴 GRAVANDO</span>
-            </div>
+            {activeSession.recorder_status === "paused" ? (
+              <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold">
+                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                <span>PAUSADO</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold animate-pulse">
+                <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                <span>🔴 GRAVANDO</span>
+              </div>
+            )}
             <div>
               <p className="text-xs font-bold text-white tracking-wide truncate max-w-[200px] sm:max-w-md">
                 {activeSession.title}

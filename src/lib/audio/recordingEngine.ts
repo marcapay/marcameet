@@ -375,13 +375,23 @@ class RecordingEngineService {
 
   /**
    * Calcular duração da reunião em segundos baseando-se no timestamp real Date.now() - started_at
+   * Desconta precisamente o tempo acumulado em pausa (accumulated_paused_ms + tempo atual de pausa)
    */
   public getElapsedSeconds(): number {
     if (!this.activeSession) return 0;
-    const now = Date.now();
+
     const startMs = this.activeSession.started_at_ms || new Date(this.activeSession.started_at).getTime();
-    const pausedMs = this.activeSession.accumulated_paused_ms || 0;
-    const diffMs = Math.max(0, now - startMs - pausedMs);
+    const accumulatedPausedMs = this.activeSession.accumulated_paused_ms || 0;
+
+    // Se estiver atualmente pausado, congelar o tempo no instante em que a pausa começou
+    let currentMs = Date.now();
+    if (this.activeSession.recorder_status === "paused") {
+      if (this.activeSession.paused_at_ms) {
+        currentMs = this.activeSession.paused_at_ms;
+      }
+    }
+
+    const diffMs = Math.max(0, currentMs - startMs - accumulatedPausedMs);
     return Math.floor(diffMs / 1000);
   }
 
@@ -435,29 +445,51 @@ class RecordingEngineService {
   }
 
   /**
-   * Pausar gravação temporariamente
+   * Pausar gravação temporariamente e congelar o relógio
    */
   public pauseRecording() {
-    if (this.mediaRecorder && this.mediaRecorder.state === "recording" && this.activeSession) {
-      this.mediaRecorder.pause();
+    if (this.activeSession && this.activeSession.recorder_status !== "paused") {
+      if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
+        try {
+          this.mediaRecorder.pause();
+        } catch (e) {
+          console.warn("Aviso ao pausar MediaRecorder:", e);
+        }
+      }
       this.activeSession.recorder_status = "paused";
+      this.activeSession.paused_at_ms = Date.now();
       this.persistCurrentState();
       this.notifyStatusChange();
+      this.notifyTimerTick(this.getElapsedSeconds());
     }
   }
 
   /**
-   * Retomar gravação pausada
+   * Retomar gravação pausada e reiniciar contagem do relógio
    */
   public resumeRecording() {
-    if (this.mediaRecorder && this.mediaRecorder.state === "paused" && this.activeSession) {
-      this.mediaRecorder.resume();
+    if (this.activeSession && this.activeSession.recorder_status === "paused") {
+      if (this.mediaRecorder && this.mediaRecorder.state === "paused") {
+        try {
+          this.mediaRecorder.resume();
+        } catch (e) {
+          console.warn("Aviso ao retomar MediaRecorder:", e);
+        }
+      }
+
+      if (this.activeSession.paused_at_ms) {
+        const pauseDurationMs = Math.max(0, Date.now() - this.activeSession.paused_at_ms);
+        this.activeSession.accumulated_paused_ms = (this.activeSession.accumulated_paused_ms || 0) + pauseDurationMs;
+        this.activeSession.paused_at_ms = undefined;
+      }
+
       this.activeSession.recorder_status = "recording";
       if (this.wakeLockEnabled) {
         requestScreenWakeLock();
       }
       this.persistCurrentState();
       this.notifyStatusChange();
+      this.notifyTimerTick(this.getElapsedSeconds());
     }
   }
 

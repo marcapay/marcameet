@@ -356,10 +356,17 @@ export default function RecordPage() {
           </p>
         </div>
         {isRecording && (
-          <span className="px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 animate-pulse">
-            <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-            🔴 GRAVANDO
-          </span>
+          isPaused ? (
+            <span className="px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>PAUSADO</span>
+            </span>
+          ) : (
+            <span className="px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-bold flex items-center gap-1.5 animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+              <span>🔴 GRAVANDO</span>
+            </span>
+          )
         )}
       </div>
 
