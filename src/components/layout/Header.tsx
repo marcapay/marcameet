@@ -17,7 +17,7 @@ export function Header() {
   ];
 
   return (
-    <header className="sticky top-0 z-40 w-full max-w-full border-b border-slate-800/80 bg-slate-950/90 backdrop-blur-md px-3.5 sm:px-4 lg:px-8 py-3.5 flex items-center justify-between">
+    <header className="sticky top-0 z-[100] w-full max-w-full border-b border-slate-800/80 bg-slate-950/95 backdrop-blur-md px-3.5 sm:px-4 lg:px-8 py-3.5 flex items-center justify-between">
       {/* Brand / Logo (Ícone de Microfone) */}
       <Link href="/" className="flex items-center gap-2.5 group" title="Marca Meet - Início">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition-transform">
@@ -38,7 +38,7 @@ export function Header() {
           const isActive = pathname === item.href || (item.href !== "/" && pathname?.startsWith(item.href));
 
           return (
-            <div key={item.href} className="relative group flex flex-col items-center">
+            <div key={item.href} className="relative group flex flex-col items-center z-[101]">
               <Link
                 href={item.href}
                 title={item.label}
@@ -63,9 +63,9 @@ export function Header() {
               </Link>
 
               {/* Tooltip elegante com o nome da aba ao passar o cursor */}
-              <div className="absolute top-full mt-2.5 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-200 z-50 flex flex-col items-center translate-y-1 group-hover:translate-y-0">
-                <div className="w-2 h-2 rotate-45 bg-slate-900 border-t border-l border-slate-700/80 -mb-1 z-10"></div>
-                <div className="px-3 py-1.5 rounded-xl bg-slate-900/95 border border-slate-700/80 text-slate-100 text-[11px] font-bold whitespace-nowrap shadow-2xl backdrop-blur-md">
+              <div className="absolute top-full mt-3 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-200 z-[110] flex flex-col items-center scale-95 group-hover:scale-100 translate-y-1 group-hover:translate-y-0">
+                <div className="w-2.5 h-2.5 rotate-45 bg-slate-900 border-t-2 border-l-2 border-indigo-500/80 -mb-1.5 z-10"></div>
+                <div className="px-3.5 py-1.5 rounded-xl bg-slate-900 border-2 border-indigo-500/60 text-white text-xs font-black whitespace-nowrap shadow-[0_10px_30px_rgba(0,0,0,0.9),0_0_20px_rgba(99,102,241,0.4)] backdrop-blur-md tracking-wide">
                   {item.label}
                 </div>
               </div>
