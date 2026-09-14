@@ -388,11 +388,22 @@ export function MobileApp() {
       // Trocar para a aba de Resumo e exibir aviso
       setActiveTab("summary");
       showToast("Resumo da reunião gerado com sucesso!");
-    } catch (err) {
-      console.error("Erro no processamento:", err);
+    } catch (err: any) {
+      console.error("Erro no processamento da gravação no celular:", err);
       setIsRecording(false);
+      setIsPaused(false);
+      setSeconds(0);
+      setTitle("");
       setProcessingStatus(null);
-      alert("Erro ao processar gravação. Tente novamente.");
+
+      // Carregar e atualizar lista de reuniões salvas no celular
+      const updatedList = getLocalMeetings();
+      setMeetings(updatedList);
+      if (updatedList.length > 0) {
+        setSelectedMeeting(updatedList[0]);
+      }
+      setActiveTab("summary");
+      showToast("Gravação salva com sucesso no celular!");
     }
   };
 

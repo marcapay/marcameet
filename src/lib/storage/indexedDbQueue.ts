@@ -1,10 +1,11 @@
-import { ActiveMeetingSessionState, AudioChunkMetadata } from "@/types/database";
+import { ActiveMeetingSessionState, AudioChunkMetadata, CompleteMeetingDetails } from "@/types/database";
 
 const DB_NAME = "MarcameetRecordingDB";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORE_SESSION = "active_session";
 const STORE_CHUNKS = "audio_chunks_queue";
+const STORE_COMPLETED_MEETINGS = "completed_meetings_v1";
 
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -23,6 +24,9 @@ function openDB(): Promise<IDBDatabase> {
         const chunkStore = db.createObjectStore(STORE_CHUNKS, { keyPath: "id" });
         chunkStore.createIndex("meeting_id", "meeting_id", { unique: false });
         chunkStore.createIndex("status", "status", { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_COMPLETED_MEETINGS)) {
+        db.createObjectStore(STORE_COMPLETED_MEETINGS, { keyPath: "meeting.id" });
       }
     };
 
@@ -170,5 +174,60 @@ export async function clearMeetingChunksInIndexedDB(meetingId: string): Promise<
     }
   } catch (err) {
     console.warn("Falha ao limpar chunks da reunião do IndexedDB:", err);
+  }
+}
+
+/**
+ * Salva uma reunião concluída integral no IndexedDB (armazenamento ilimitado para celular)
+ */
+export async function saveCompletedMeetingToIndexedDB(details: CompleteMeetingDetails): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_COMPLETED_MEETINGS, "readwrite");
+    const store = tx.objectStore(STORE_COMPLETED_MEETINGS);
+    store.put(details);
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn("Falha ao salvar reunião concluída no IndexedDB:", err);
+  }
+}
+
+/**
+ * Obtém todas as reuniões concluídas armazenadas no IndexedDB
+ */
+export async function getCompletedMeetingsFromIndexedDB(): Promise<CompleteMeetingDetails[]> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_COMPLETED_MEETINGS, "readonly");
+    const store = tx.objectStore(STORE_COMPLETED_MEETINGS);
+    const request = store.getAll();
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn("Falha ao carregar reuniões do IndexedDB:", err);
+    return [];
+  }
+}
+
+/**
+ * Exclui uma reunião concluída do IndexedDB
+ */
+export async function deleteCompletedMeetingFromIndexedDB(meetingId: string): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_COMPLETED_MEETINGS, "readwrite");
+    const store = tx.objectStore(STORE_COMPLETED_MEETINGS);
+    store.delete(meetingId);
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn("Falha ao excluir reunião do IndexedDB:", err);
   }
 }
