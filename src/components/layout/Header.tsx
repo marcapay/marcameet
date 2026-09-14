@@ -17,7 +17,7 @@ export function Header() {
   ];
 
   return (
-    <header className="sticky top-0 z-[100] w-full max-w-full border-b border-slate-800/80 bg-slate-950/95 backdrop-blur-md px-3.5 sm:px-4 lg:px-8 py-3.5 flex items-center justify-between">
+    <header className="sticky top-0 z-[100] w-full max-w-full border-b border-slate-800/80 bg-slate-950/95 backdrop-blur-md px-3.5 sm:px-4 lg:px-8 py-4 flex items-center justify-between min-h-[76px]">
       {/* Brand / Logo (Ícone de Microfone) */}
       <Link href="/" className="flex items-center gap-2.5 group" title="Marca Meet - Início">
         <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition-transform">
@@ -31,45 +31,49 @@ export function Header() {
         </div>
       </Link>
 
-      {/* Menu Principal no Cabeçalho (Espaçado e Sem Marcação de Caixas) */}
-      <nav className="hidden md:flex items-center gap-6 lg:gap-8">
+      {/* Menu Principal no Cabeçalho (Com Ícones e Nomes Visíveis) */}
+      <nav className="hidden md:flex items-center gap-2 lg:gap-4">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = pathname === item.href || (item.href !== "/" && pathname?.startsWith(item.href));
 
           return (
-            <div key={item.href} className="relative group flex flex-col items-center z-[101]">
-              <Link
-                href={item.href}
-                title={item.label}
-                className="p-1.5 flex items-center justify-center transition-all duration-200 relative"
-              >
+            <Link
+              key={item.href}
+              href={item.href}
+              title={item.label}
+              className={`flex flex-col items-center justify-center px-3 py-1.5 rounded-xl transition-all duration-200 relative group ${
+                isActive
+                  ? "bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 shadow-sm"
+                  : "text-slate-400 hover:text-slate-100 hover:bg-slate-900/80"
+              }`}
+            >
+              <div className="relative flex items-center justify-center">
                 <Icon
-                  className={`w-6 h-6 transition-all duration-200 ${
+                  className={`w-5 h-5 transition-all duration-200 ${
                     isActive
                       ? "text-indigo-400 scale-110 drop-shadow-[0_0_10px_rgba(99,102,241,0.6)]"
-                      : "text-slate-400 hover:text-slate-100 group-hover:scale-110"
+                      : "text-slate-400 group-hover:text-slate-100 group-hover:scale-110"
                   }`}
                 />
-
-                {/* Ponto indicador de página ativa */}
-                {isActive && (
-                  <span className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-indigo-400 shadow-sm shadow-indigo-400"></span>
-                )}
-
                 {item.highlight && !isActive && (
-                  <span className="absolute top-0 right-0 w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                 )}
-              </Link>
-
-              {/* Tooltip elegante com o nome da aba ao passar o cursor */}
-              <div className="absolute top-full mt-3 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 pointer-events-none transition-all duration-200 z-[110] flex flex-col items-center scale-95 group-hover:scale-100 translate-y-1 group-hover:translate-y-0">
-                <div className="w-2.5 h-2.5 rotate-45 bg-slate-900 border-t-2 border-l-2 border-indigo-500/80 -mb-1.5 z-10"></div>
-                <div className="px-3.5 py-1.5 rounded-xl bg-slate-900 border-2 border-indigo-500/60 text-white text-xs font-black whitespace-nowrap shadow-[0_10px_30px_rgba(0,0,0,0.9),0_0_20px_rgba(99,102,241,0.4)] backdrop-blur-md tracking-wide">
-                  {item.label}
-                </div>
               </div>
-            </div>
+
+              <span
+                className={`text-[11px] mt-1 tracking-tight transition-colors whitespace-nowrap ${
+                  isActive ? "font-bold text-indigo-300" : "font-medium text-slate-400 group-hover:text-slate-100"
+                }`}
+              >
+                {item.label}
+              </span>
+
+              {/* Indicador de aba ativa */}
+              {isActive && (
+                <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-indigo-400 shadow-sm shadow-indigo-400"></span>
+              )}
+            </Link>
           );
         })}
       </nav>
