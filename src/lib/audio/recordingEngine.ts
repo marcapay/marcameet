@@ -99,22 +99,34 @@ class RecordingEngineService {
     if (this.isInitialized || typeof window === "undefined") return;
     this.isInitialized = true;
 
-    // Page Visibility API Handler (NUNCA ENCERRA A GRAVAÇÃO)
+    // Page Visibility API Handler (Auto-pausa ao apagar a tela / esconder e auto-retoma ao voltar)
     document.addEventListener("visibilitychange", async () => {
       if (!this.activeSession || this.activeSession.status === "finished") return;
 
       if (document.visibilityState === "hidden") {
-        console.log("📍 [RecordingEngine] Aplicação entrou em segundo plano (background). Manter gravação ativa.");
+        console.log("📍 [RecordingEngine] Aplicação entrou em segundo plano / tela apagada.");
         this.activeSession.status = "background";
         this.activeSession.last_activity_at = new Date().toISOString();
+
+        // Segurança Extra iOS/Mobile: Pausar gravação se a tela apagar para não perder dados nem corromper áudio
+        if (this.activeSession.recorder_status === "recording") {
+          console.log("📱 [RecordingEngine] Tela apagada/minimizada. Reunião pausada automaticamente por segurança.");
+          this.pauseRecording("screen_off");
+        }
+
         await this.persistCurrentState();
         this.notifyStatusChange();
       } else if (document.visibilityState === "visible") {
-        console.log("👁️ [RecordingEngine] Aplicação retornou a primeiro plano. Sincronizar estado.");
-        if (this.activeSession.status === "background") {
+        console.log("👁️ [RecordingEngine] Aplicação retornou a primeiro plano / tela acesa.");
+        this.activeSession.last_activity_at = new Date().toISOString();
+
+        // Se a reunião foi pausada automaticamente ao apagar a tela, retomar automaticamente agora
+        if (this.activeSession.recorder_status === "paused" && this.activeSession.auto_paused_reason === "screen_off") {
+          console.log("👁️ [RecordingEngine] Tela acesa/retornou a primeiro plano. Reunião retomada automaticamente com segurança.");
+          this.resumeRecording();
+        } else if (this.activeSession.status === "background") {
           this.activeSession.status = "recording";
         }
-        this.activeSession.last_activity_at = new Date().toISOString();
 
         if (this.wakeLockEnabled) {
           await requestScreenWakeLock();
@@ -248,11 +260,23 @@ class RecordingEngineService {
     }
     startAudioKeepAlive();
 
-    // Monitorar faixas de áudio
+    // Monitorar faixas de áudio (Mute/Unmute para iOS e Android)
     stream.getAudioTracks().forEach((track) => {
       track.onended = () => {
         console.warn("🚨 [RecordingEngine] AudioTrack encerrada pelo sistema/usuário.");
         this.handleSourceEnded("Faixa de áudio encerrada");
+      };
+      track.onmute = () => {
+        console.warn("⏸️ [RecordingEngine] AudioTrack mutada pelo iOS/Sistema. Auto-pausando gravação.");
+        if (this.activeSession && this.activeSession.recorder_status === "recording") {
+          this.pauseRecording("mic_mute");
+        }
+      };
+      track.onunmute = () => {
+        console.log("▶️ [RecordingEngine] AudioTrack desmutada pelo iOS/Sistema. Retomando gravação.");
+        if (this.activeSession && this.activeSession.recorder_status === "paused" && this.activeSession.auto_paused_reason === "mic_mute") {
+          this.resumeRecording();
+        }
       };
     });
 
@@ -447,7 +471,7 @@ class RecordingEngineService {
   /**
    * Pausar gravação temporariamente e congelar o relógio
    */
-  public pauseRecording() {
+  public pauseRecording(reason: "screen_off" | "mic_mute" | "user" = "user") {
     if (this.activeSession && this.activeSession.recorder_status !== "paused") {
       if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
         try {
@@ -458,6 +482,7 @@ class RecordingEngineService {
       }
       this.activeSession.recorder_status = "paused";
       this.activeSession.paused_at_ms = Date.now();
+      this.activeSession.auto_paused_reason = reason;
       this.persistCurrentState();
       this.notifyStatusChange();
       this.notifyTimerTick(this.getElapsedSeconds());
@@ -484,6 +509,7 @@ class RecordingEngineService {
       }
 
       this.activeSession.recorder_status = "recording";
+      this.activeSession.auto_paused_reason = null;
       if (this.wakeLockEnabled) {
         requestScreenWakeLock();
       }

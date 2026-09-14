@@ -94,7 +94,7 @@ export function ActiveMeetingBanner() {
             {activeSession.recorder_status === "paused" ? (
               <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold">
                 <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span>PAUSADO</span>
+                <span>{activeSession.auto_paused_reason === "screen_off" ? "PAUSADO (TELA APAGADA)" : activeSession.auto_paused_reason === "mic_mute" ? "PAUSADO (SEM ÁUDIO)" : "PAUSADO"}</span>
               </div>
             ) : (
               <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold animate-pulse">

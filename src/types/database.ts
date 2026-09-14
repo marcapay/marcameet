@@ -201,6 +201,7 @@ export interface ActiveMeetingSessionState {
   recorder_status: MediaRecorderStatus;
   accumulated_paused_ms: number;
   paused_at_ms?: number;
+  auto_paused_reason?: 'screen_off' | 'mic_mute' | 'user' | null;
   wake_lock_enabled: boolean;
   transcript_draft?: string;
   speaker_map?: Record<string, string>;
