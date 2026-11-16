@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { Search, Sparkles, Clock, Calendar, ArrowRight, Award, CheckSquare, AlertTriangle, DollarSign, FileText } from "lucide-react";
-import { getLocalMeetings } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
 
 interface SearchResultItem {
@@ -22,6 +22,10 @@ export default function SearchPage() {
 
   useEffect(() => {
     setAllMeetings(getLocalMeetings());
+    const unsubscribe = subscribeLocalMeetings((list) => {
+      setAllMeetings(list);
+    });
+    return () => unsubscribe();
   }, []);
 
   const exampleQueries = [

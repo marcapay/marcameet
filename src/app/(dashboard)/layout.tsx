@@ -2,6 +2,7 @@ import { Header } from "@/components/layout/Header";
 import { MobileNav } from "@/components/layout/MobileNav";
 import { ActiveMeetingBanner } from "@/components/audio/ActiveMeetingBanner";
 import { BackgroundModePrompt } from "@/components/audio/BackgroundModePrompt";
+import { AccountProtectionBanner } from "@/components/auth/AccountProtectionBanner";
 
 export default function DashboardLayout({
   children,
@@ -11,6 +12,7 @@ export default function DashboardLayout({
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col max-w-full overflow-x-hidden">
       <Header />
+      <AccountProtectionBanner />
       <ActiveMeetingBanner />
       <BackgroundModePrompt />
       <div className="flex-1 flex overflow-hidden w-full max-w-full">

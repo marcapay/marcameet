@@ -3,6 +3,8 @@
  * Garante que as chaves de API e configurações de banco fiquem salvas para sempre no dispositivo.
  */
 
+const keysCache = new Map<string, string>();
+
 function getCookie(name: string): string | null {
   if (typeof document === "undefined") return null;
   const match = document.cookie.match(new RegExp("(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, "\\$1") + "=([^;]*)"));
@@ -18,6 +20,11 @@ function setCookie(name: string, value: string, days = 3650): void {
 export function getStoredKey(key: string, envFallback = ""): string {
   if (typeof window === "undefined") {
     return (envFallback.includes("placeholder") ? "" : envFallback).trim();
+  }
+
+  const cacheKey = `${key}_${envFallback}`;
+  if (keysCache.has(cacheKey)) {
+    return keysCache.get(cacheKey)!;
   }
 
   // 1. Tentar ler do localStorage
@@ -45,13 +52,16 @@ export function getStoredKey(key: string, envFallback = ""): string {
     val = envFallback;
   }
 
-  return val.includes("placeholder") ? "" : val.trim();
+  const result = val.includes("placeholder") ? "" : val.trim();
+  keysCache.set(cacheKey, result);
+  return result;
 }
 
 export function setStoredKey(key: string, value: string): void {
   if (typeof window === "undefined") return;
 
   const trimmed = value.trim();
+  keysCache.clear(); // Limpa cache para garantir atualização de todas variantes
 
   try {
     localStorage.setItem(key, trimmed);
@@ -65,6 +75,8 @@ export function setStoredKey(key: string, value: string): void {
 export function removeStoredKey(key: string): void {
   if (typeof window === "undefined") return;
 
+  keysCache.clear();
+
   try {
     localStorage.removeItem(key);
   } catch (e) {
@@ -75,3 +87,4 @@ export function removeStoredKey(key: string): void {
     document.cookie = `${key}=; path=/; max-age=0; SameSite=Lax`;
   }
 }
+

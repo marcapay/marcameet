@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -26,6 +26,7 @@ import {
   ChevronDown,
   RefreshCw
 } from "lucide-react";
+import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
@@ -50,6 +51,25 @@ interface LiveSegment {
   text: string;
 }
 
+const LiveSegmentRow = memo(function LiveSegmentRow({ seg, speakerName }: { seg: LiveSegment; speakerName: string }) {
+  return (
+    <div className="pt-4 first:pt-0 space-y-1 group">
+      <div className="flex items-center gap-2">
+        <span className="px-2 py-0.5 rounded bg-indigo-600/20 text-indigo-300 font-mono text-[11px] font-bold border border-indigo-500/30">
+          {seg.timestamp}
+        </span>
+        <span className="font-bold text-slate-200 text-xs">
+          {speakerName}:
+        </span>
+      </div>
+
+      <p className="text-sm text-slate-200 leading-relaxed font-sans pl-2 border-l-2 border-indigo-500/50 group-hover:border-indigo-400 transition-colors">
+        {seg.text}
+      </p>
+    </div>
+  );
+});
+
 export default function OnlineMeetingPage() {
   const router = useRouter();
 
@@ -65,6 +85,7 @@ export default function OnlineMeetingPage() {
   const [seconds, setSeconds] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [segments, setSegments] = useState<LiveSegment[]>([]);
+  const [visibleLimit, setVisibleLimit] = useState(80);
   const [speakerMap, setSpeakerMap] = useState<Record<string, string>>({
     "Participante 1": "Participante 1",
     "Participante 2": "Participante 2",
@@ -96,6 +117,11 @@ export default function OnlineMeetingPage() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const visibleSegments = useMemo(() => {
+    if (segments.length <= visibleLimit) return segments;
+    return segments.slice(segments.length - visibleLimit);
+  }, [segments, visibleLimit]);
+
   const [showConfirmFinishModal, setShowConfirmFinishModal] = useState(false);
 
   // Subscrever a eventos da Engine Central de Gravação
@@ -115,9 +141,6 @@ export default function OnlineMeetingPage() {
           }
         }
       },
-      onTimerTick: (sec) => {
-        setSeconds(sec);
-      },
       onChunkCaptured: async (blob) => {
         await processAudioChunk(blob);
       },
@@ -131,7 +154,6 @@ export default function OnlineMeetingPage() {
       setStep("recording");
       setMeetingTitle(active.title);
       meetingIdRef.current = active.meeting_id;
-      setSeconds(recordingEngine.getElapsedSeconds());
       setIsPaused(active.recorder_status === "paused");
       if (active.source_status === "ended") {
         setMeetingStatus("Áudio interrompido");
@@ -142,6 +164,11 @@ export default function OnlineMeetingPage() {
 
     return () => {
       unsubscribe();
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch (e) {}
+      }
     };
   }, []);
 
@@ -268,7 +295,7 @@ export default function OnlineMeetingPage() {
         title: meetingTitle.trim(),
         sourceType: "online_meeting",
         stream: audioOnlyStream,
-        chunkIntervalMs: 8000,
+        chunkIntervalMs: 5000,
       });
 
       setStep("recording");
@@ -720,7 +747,7 @@ export default function OnlineMeetingPage() {
 
                 <span className="text-xs font-mono text-indigo-400 bg-slate-900 px-2.5 py-0.5 rounded border border-slate-800 flex items-center gap-1">
                   <Clock className="w-3.5 h-3.5" />
-                  <span>{formatTimer(seconds)}</span>
+                  <RecordingTimerDisplay />
                 </span>
               </div>
 
@@ -907,22 +934,23 @@ export default function OnlineMeetingPage() {
                   </p>
                 </div>
               ) : (
-                segments.map((seg) => (
-                  <div key={seg.id} className="pt-4 first:pt-0 space-y-1 group">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded bg-indigo-600/20 text-indigo-300 font-mono text-[11px] font-bold border border-indigo-500/30">
-                        {seg.timestamp}
-                      </span>
-                      <span className="font-bold text-slate-200 text-xs">
-                        {speakerMap[seg.speaker] || seg.speaker}:
-                      </span>
-                    </div>
-
-                    <p className="text-sm text-slate-200 leading-relaxed font-sans pl-2 border-l-2 border-indigo-500/50 group-hover:border-indigo-400 transition-colors">
-                      {seg.text}
-                    </p>
-                  </div>
-                ))
+                <>
+                  {segments.length > visibleSegments.length && (
+                    <button
+                      onClick={() => setVisibleLimit((prev) => prev + 100)}
+                      className="w-full py-2 text-xs font-semibold text-indigo-400 hover:text-indigo-300 bg-indigo-950/30 hover:bg-indigo-900/40 rounded-lg border border-indigo-800/40 transition-colors"
+                    >
+                      Carregar trechos anteriores ({segments.length - visibleSegments.length} ocultos)
+                    </button>
+                  )}
+                  {visibleSegments.map((seg) => (
+                    <LiveSegmentRow
+                      key={seg.id}
+                      seg={seg}
+                      speakerName={speakerMap[seg.speaker] || seg.speaker}
+                    />
+                  ))}
+                </>
               )}
             </div>
 

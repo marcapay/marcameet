@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useDeferredValue, useMemo } from "react";
 import Link from "next/link";
 import { Search, Filter, Video, Mic, Upload, FileText, Calendar, Clock, ArrowRight, Tag, RefreshCw, Trash2, Edit2 } from "lucide-react";
-import { getLocalMeetings, deleteLocalMeeting, updateMeetingTitle } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, deleteLocalMeeting, updateMeetingTitle, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails, MeetingStatus } from "@/types/database";
 
 export default function MeetingsPage() {
   const [meetings, setMeetings] = useState<CompleteMeetingDetails[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [selectedStatus, setSelectedStatus] = useState<string>("ALL");
   const [selectedTag, setSelectedTag] = useState<string>("ALL");
 
@@ -18,6 +19,10 @@ export default function MeetingsPage() {
 
   useEffect(() => {
     reloadMeetings();
+    const unsubscribe = subscribeLocalMeetings((list) => {
+      setMeetings(list);
+    });
+    return () => unsubscribe();
   }, []);
 
   const handleDeleteMeeting = async (e: React.MouseEvent, meetingId: string, title: string) => {
@@ -39,23 +44,27 @@ export default function MeetingsPage() {
     }
   };
 
-  // Extrair todas as tags únicas
-  const allTags = Array.from(
-    new Set(meetings.flatMap((m) => m.meeting.tags || []))
-  );
+  // Extrair todas as tags únicas com useMemo
+  const allTags = useMemo(() => {
+    return Array.from(new Set(meetings.flatMap((m) => m.meeting.tags || [])));
+  }, [meetings]);
 
-  // Filtragem
-  const filteredMeetings = meetings.filter((item) => {
-    const matchesSearch =
-      item.meeting.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (item.meeting.description && item.meeting.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (item.summary?.objective && item.summary.objective.toLowerCase().includes(searchQuery.toLowerCase()));
+  // Filtragem com useMemo & useDeferredValue
+  const filteredMeetings = useMemo(() => {
+    const query = deferredSearchQuery.trim().toLowerCase();
+    return meetings.filter((item) => {
+      const matchesSearch =
+        !query ||
+        item.meeting.title.toLowerCase().includes(query) ||
+        (item.meeting.description && item.meeting.description.toLowerCase().includes(query)) ||
+        (item.summary?.objective && item.summary.objective.toLowerCase().includes(query));
 
-    const matchesStatus = selectedStatus === "ALL" || item.meeting.status === selectedStatus;
-    const matchesTag = selectedTag === "ALL" || (item.meeting.tags && item.meeting.tags.includes(selectedTag));
+      const matchesStatus = selectedStatus === "ALL" || item.meeting.status === selectedStatus;
+      const matchesTag = selectedTag === "ALL" || (item.meeting.tags && item.meeting.tags.includes(selectedTag));
 
-    return matchesSearch && matchesStatus && matchesTag;
-  });
+      return matchesSearch && matchesStatus && matchesTag;
+    });
+  }, [meetings, deferredSearchQuery, selectedStatus, selectedTag]);
 
   const getSourceIcon = (source: string) => {
     switch (source) {

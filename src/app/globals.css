@@ -5,7 +5,7 @@
 :root {
   --background: #090d16;
   --foreground: #f1f5f9;
-  --card-bg: rgba(15, 23, 42, 0.75);
+  --card-bg: rgba(15, 23, 42, 0.92);
   --card-border: rgba(255, 255, 255, 0.08);
 }
 
@@ -29,10 +29,10 @@ html, body {
 /* Glassmorphism styling */
 .glass-card {
   background: var(--card-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   border: 1px solid var(--card-border);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  box-shadow: 0 4px 20px 0 rgba(0, 0, 0, 0.25);
 }
 
 .glass-card-hover {
@@ -42,6 +42,7 @@ html, body {
   border-color: rgba(99, 102, 241, 0.35);
   transform: translateY(-2px);
   box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.15);
+  will-change: transform;
 }
 
 /* Pulse animation for active recording */
@@ -64,17 +65,17 @@ html, body {
   animation: recording-pulse 1.8s infinite;
 }
 
-/* Audio waveform visualizer animation */
+/* Audio waveform visualizer animation (GPU Compositor - zero reflow) */
 @keyframes bar-bounce {
-  0%, 100% { height: 8px; }
-  50% { height: 32px; }
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
 }
 
-.animate-bar-1 { animation: bar-bounce 0.8s ease-in-out infinite 0.1s; }
-.animate-bar-2 { animation: bar-bounce 0.8s ease-in-out infinite 0.25s; }
-.animate-bar-3 { animation: bar-bounce 0.8s ease-in-out infinite 0.4s; }
-.animate-bar-4 { animation: bar-bounce 0.8s ease-in-out infinite 0.2s; }
-.animate-bar-5 { animation: bar-bounce 0.8s ease-in-out infinite 0.35s; }
+.animate-bar-1 { animation: bar-bounce 0.8s ease-in-out infinite 0.1s; transform-origin: bottom; }
+.animate-bar-2 { animation: bar-bounce 0.8s ease-in-out infinite 0.25s; transform-origin: bottom; }
+.animate-bar-3 { animation: bar-bounce 0.8s ease-in-out infinite 0.4s; transform-origin: bottom; }
+.animate-bar-4 { animation: bar-bounce 0.8s ease-in-out infinite 0.2s; transform-origin: bottom; }
+.animate-bar-5 { animation: bar-bounce 0.8s ease-in-out infinite 0.35s; transform-origin: bottom; }
 
 /* Custom scrollbars */
 ::-webkit-scrollbar {

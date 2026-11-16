@@ -29,7 +29,85 @@ export async function processAudioTranscription(file: File | Blob, filename: str
     );
   }
 
-  // 1. Tentar Gemini 1.5 Flash Audio API se houver geminiKey
+  // 1. Tentar OpenAI Whisper se houver openaiKey (Upload por FormData direto sem conversão base64 em RAM)
+  if (openaiKey) {
+    try {
+      const formData = new FormData();
+      formData.append("file", file, filename);
+      formData.append("model", "whisper-1");
+      formData.append("response_format", "verbose_json");
+      formData.append("language", "pt");
+
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const rawText = data.text?.trim() || "";
+        const segments = (data.segments || [])
+          .filter((s: any) => s.text && s.text.trim().length > 0)
+          .map((s: any, idx: number) => ({
+            start_time: Math.round((s.start || 0) * 10) / 10,
+            end_time: Math.round((s.end || 0) * 10) / 10,
+            speaker: `Participante ${(idx % 2) + 1}`,
+            text: s.text.trim(),
+          }));
+
+        if (rawText.length > 0) {
+          return {
+            raw_text: rawText,
+            segments: segments.length > 0 ? segments : [
+              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+            ],
+            speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Falha na API OpenAI Whisper:", e);
+    }
+  }
+
+  // 2. Tentar Groq Whisper se houver groqKey (Upload por FormData direto)
+  if (groqKey) {
+    try {
+      const formData = new FormData();
+      formData.append("file", file, filename);
+      formData.append("model", "whisper-large-v3");
+      formData.append("language", "pt");
+
+      const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const rawText = data.text?.trim() || "";
+        if (rawText.length > 0) {
+          return {
+            raw_text: rawText,
+            segments: [
+              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+            ],
+            speaker_map: { "Participante 1": "Participante 1" },
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Falha na API Groq Whisper:", e);
+    }
+  }
+
+  // 3. Tentar Gemini 1.5 Flash Audio API se houver geminiKey
   if (geminiKey) {
     try {
       const base64Audio = await new Promise<string>((resolve, reject) => {
@@ -50,23 +128,18 @@ export async function processAudioTranscription(file: File | Blob, filename: str
       else if (rawMime.includes("ogg")) cleanMime = "audio/ogg";
       else if (rawMime.includes("mp4") || rawMime.includes("m4a")) cleanMime = "audio/mp4";
 
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [
+      const payloadBody = JSON.stringify({
+        contents: [
+          {
+            parts: [
               {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: cleanMime,
-                      data: base64Audio,
-                    },
-                  },
-                  {
-                    text: `Transcreva estritamente as palavras faladas neste áudio em português. Identifique a alternância dos falantes como "Participante 1", "Participante 2", etc.
+                inlineData: {
+                  mimeType: cleanMime,
+                  data: base64Audio,
+                },
+              },
+              {
+                text: `Transcreva estritamente as palavras faladas neste áudio em português. Identifique a alternância dos falantes como "Participante 1", "Participante 2", etc.
 Se houver apenas silêncio ou barulho de fundo sem palavras faladas compreensíveis, retorne um JSON com "raw_text": "" e "segments": [].
 Retorne APENAS um JSON válido exatamente neste formato:
 {
@@ -75,12 +148,19 @@ Retorne APENAS um JSON válido exatamente neste formato:
     { "start_time": 0, "end_time": 5, "speaker": "Participante 1", "text": "frase dita" }
   ]
 }`,
-                  },
-                ],
               },
             ],
-            generationConfig: { responseMimeType: "application/json" },
-          }),
+          },
+        ],
+        generationConfig: { responseMimeType: "application/json" },
+      });
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payloadBody,
         }
       );
 

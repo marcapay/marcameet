@@ -21,6 +21,7 @@ import {
   Shield,
   Smartphone
 } from "lucide-react";
+import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails, ActiveMeetingEngineStatus } from "@/types/database";
@@ -40,7 +41,6 @@ export default function RecordPage() {
   // Estado da Gravação & Engine
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [seconds, setSeconds] = useState(0);
   const [engineStatus, setEngineStatus] = useState<ActiveMeetingEngineStatus>("idle");
   const [sourceEnded, setSourceEnded] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
@@ -68,9 +68,6 @@ export default function RecordPage() {
           setSourceEnded(false);
         }
       },
-      onTimerTick: (sec) => {
-        setSeconds(sec);
-      },
       onSourceInterrupted: (reason) => {
         console.warn("Entrada de áudio interrompida:", reason);
         setSourceEnded(true);
@@ -82,7 +79,6 @@ export default function RecordPage() {
     if (currentSession && currentSession.source_type !== "online_meeting" && recordingEngine.hasLiveRecorder()) {
       setIsRecording(true);
       setIsPaused(currentSession.recorder_status === "paused");
-      setSeconds(recordingEngine.getElapsedSeconds());
       if (currentSession.title) setTitle(currentSession.title);
     }
 
@@ -176,7 +172,7 @@ export default function RecordPage() {
 
       const newMeetingId = result.meetingId;
       const duration = result.durationSeconds;
-      const audioBlob = result.audioBlob;
+      const rawTextDraft = result.transcriptDraft || "Reunião presencial gravada com sucesso.";
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
       const tagsArray = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
 
@@ -211,13 +207,12 @@ export default function RecordPage() {
 
       saveLocalMeeting(initialDetails);
 
-      // 2. Iniciar Transcrição com API Key
-      setProcessingStatus("Transcrevendo áudio com inteligência de fala da API Key...");
-      const transcriptData = await processAudioTranscription(audioBlob, "gravacao_presencial.webm");
-
-      // 3. Iniciar Análise por IA
+      // 2. Iniciar Análise por IA
       setProcessingStatus("Gerando resumo executivo detalhado, decisões e tarefas com IA...");
-      const aiData = await processAIAnalysis(transcriptData.raw_text, transcriptData.segments);
+      const segmentsDraft = [
+        { start_time: 0, end_time: duration, speaker: "Participante 1", text: rawTextDraft }
+      ];
+      const aiData = await processAIAnalysis(rawTextDraft, segmentsDraft);
 
       // 4. Mapear Tarefas no formato completo
       const formattedTasks = (aiData.tasks || []).map((t, idx) => ({
@@ -249,9 +244,9 @@ export default function RecordPage() {
         transcript: {
           id: `t-${newMeetingId}`,
           meeting_id: newMeetingId,
-          raw_text: transcriptData.raw_text,
-          speaker_map: transcriptData.speaker_map,
-          segments: transcriptData.segments.map((s, i) => ({
+          raw_text: rawTextDraft,
+          speaker_map: { "Participante 1": "Participante 1" },
+          segments: segmentsDraft.map((s, i) => ({
             id: `seg-${newMeetingId}-${i}`,
             transcript_id: `t-${newMeetingId}`,
             meeting_id: newMeetingId,
@@ -533,7 +528,7 @@ export default function RecordPage() {
           <div className="space-y-2">
             <span className="text-xs font-bold uppercase tracking-widest text-slate-400">Tempo Decorrido Real</span>
             <div className="text-5xl md:text-6xl font-black tracking-tight text-white font-mono">
-              {formatTimer(seconds)}
+              <RecordingTimerDisplay />
             </div>
             <div className="flex items-center justify-center gap-2">
               {isPaused ? (

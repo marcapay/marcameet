@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Video, Mic, FileText, Settings } from "lucide-react";
+import { Home, Video, Mic, FileText, Settings, UserCheck } from "lucide-react";
 
 export function MobileNav() {
   const pathname = usePathname();
@@ -11,7 +11,7 @@ export function MobileNav() {
     { label: "Início", href: "/", icon: Home },
     { label: "Reuniões", href: "/meetings", icon: Video },
     { label: "GRAVAR", href: "/record", icon: Mic, isCenter: true },
-    { label: "Resumos", href: "/tasks", icon: FileText },
+    { label: "Conta", href: "/account", icon: UserCheck },
     { label: "Ajustes", href: "/settings", icon: Settings },
   ];
 

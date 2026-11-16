@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useDeferredValue, useMemo } from "react";
 import Link from "next/link";
 import {
   Mic,
@@ -31,11 +31,12 @@ import {
   ArrowRight,
   Radio
 } from "lucide-react";
-import { getLocalMeetings, saveLocalMeeting, updateSpeakerNameInMeeting, updateMeetingTitle } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, saveLocalMeeting, updateSpeakerNameInMeeting, updateMeetingTitle, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { requestScreenWakeLock, releaseScreenWakeLock, startAudioKeepAlive, stopAudioKeepAlive } from "@/lib/audio/recordingKeepAlive";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
+import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 
 
@@ -78,7 +79,6 @@ export function MobileApp() {
   };
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number>(0);
   const accumulatedTimeRef = useRef<number>(0);
@@ -101,16 +101,18 @@ export function MobileApp() {
 
   useEffect(() => {
     reloadMeetings();
+    const unsubscribe = subscribeLocalMeetings((updatedList) => {
+      setMeetings(updatedList);
+      setSelectedMeeting((prev) => {
+        if (!prev) return updatedList[0] || null;
+        const match = updatedList.find((m) => m.meeting.id === prev.meeting.id);
+        return match || updatedList[0] || null;
+      });
+    });
+    return () => {
+      unsubscribe();
+    };
   }, []);
-
-  // Atualizar cronômetro em tempo real baseado em Date.now()
-  const updateTimer = () => {
-    if (startTimeRef.current > 0) {
-      const now = Date.now();
-      const totalMs = accumulatedTimeRef.current + (now - startTimeRef.current);
-      setSeconds(Math.floor(totalMs / 1000));
-    }
-  };
 
   // Subscrever a eventos da Engine Central de Gravação
   useEffect(() => {
@@ -124,16 +126,12 @@ export function MobileApp() {
           setIsPaused(false);
         }
       },
-      onTimerTick: (sec) => {
-        setSeconds(sec);
-      },
     });
 
     const active = recordingEngine.getActiveSession();
     if (active && recordingEngine.hasLiveRecorder()) {
       setIsRecording(true);
       setIsPaused(active.recorder_status === "paused");
-      setSeconds(recordingEngine.getElapsedSeconds());
     }
 
     return () => {
@@ -177,7 +175,7 @@ export function MobileApp() {
         sourceType: "recording",
         stream,
         wakeLockEnabled: true,
-        chunkIntervalMs: 8000,
+        chunkIntervalMs: 5000,
       });
 
       setIsRecording(true);
@@ -221,7 +219,7 @@ export function MobileApp() {
       const engineResult = await recordingEngine.finishMeeting();
 
       const duration = engineResult.durationSeconds;
-      const audioBlob = engineResult.audioBlob;
+      const rawTextDraft = engineResult.transcriptDraft || "Reunião gravada e processada.";
       const newMeetingId = engineResult.meetingId;
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
@@ -255,11 +253,11 @@ export function MobileApp() {
 
       saveLocalMeeting(initialDetails);
 
-      setProcessingStatus("Transcrevendo áudio com IA...");
-      const transcriptData = await processAudioTranscription(audioBlob, "gravacao_rapida.webm");
-
       setProcessingStatus("Gerando resumo executivo, decisões e tarefas com IA...");
-      const aiData = await processAIAnalysis(transcriptData.raw_text, transcriptData.segments);
+      const segmentsDraft = [
+        { start_time: 0, end_time: duration, speaker: "Participante 1", text: rawTextDraft }
+      ];
+      const aiData = await processAIAnalysis(rawTextDraft, segmentsDraft);
 
 
 
@@ -291,9 +289,9 @@ export function MobileApp() {
         transcript: {
           id: `t-${newMeetingId}`,
           meeting_id: newMeetingId,
-          raw_text: transcriptData.raw_text,
-          speaker_map: transcriptData.speaker_map,
-          segments: transcriptData.segments.map((s, i) => ({
+          raw_text: rawTextDraft,
+          speaker_map: { "Participante 1": "Participante 1" },
+          segments: segmentsDraft.map((s, i) => ({
             id: `seg-${newMeetingId}-${i}`,
             transcript_id: `t-${newMeetingId}`,
             meeting_id: newMeetingId,
@@ -443,12 +441,24 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
     setNewSpeakerName("");
   };
 
-  // Transcrição filtrada para a reunião selecionada
-  const filteredSegments = (selectedMeeting?.transcript?.segments || []).filter(
-    (seg) =>
-      seg.text.toLowerCase().includes(transcriptSearch.toLowerCase()) ||
-      seg.speaker.toLowerCase().includes(transcriptSearch.toLowerCase())
-  );
+  // Transcrição filtrada com useDeferredValue para zero travamentos na digitação
+  const deferredSearch = useDeferredValue(transcriptSearch);
+  const [visibleSegmentsLimit, setVisibleSegmentsLimit] = useState(60);
+
+  const filteredSegments = useMemo(() => {
+    const segments = selectedMeeting?.transcript?.segments || [];
+    const query = deferredSearch.trim().toLowerCase();
+    if (!query) return segments;
+    return segments.filter(
+      (seg) =>
+        seg.text.toLowerCase().includes(query) ||
+        seg.speaker.toLowerCase().includes(query)
+    );
+  }, [selectedMeeting?.transcript?.segments, deferredSearch]);
+
+  const visibleSegments = useMemo(() => {
+    return filteredSegments.slice(0, visibleSegmentsLimit);
+  }, [filteredSegments, visibleSegmentsLimit]);
 
   // MobileApp Dashboard View - Compact Container Layout
   return (
@@ -593,7 +603,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
 
                 <div className="space-y-1">
                   <div className="text-5xl font-black font-mono tracking-tight text-white">
-                    {formatTimer(seconds)}
+                    <RecordingTimerDisplay />
                   </div>
                   <p className="text-xs text-slate-400 font-medium">
                     {!isRecording
@@ -1120,7 +1130,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
             </h3>
 
             <div className="space-y-4 divide-y divide-slate-800/60">
-              {filteredSegments.map((seg) => (
+              {visibleSegments.map((seg) => (
                 <div key={seg.id} className="pt-4 first:pt-0 space-y-1.5 group">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -1154,6 +1164,17 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 </div>
               ))}
             </div>
+
+            {filteredSegments.length > visibleSegmentsLimit && (
+              <div className="pt-4 text-center">
+                <button
+                  onClick={() => setVisibleSegmentsLimit((prev) => prev + 60)}
+                  className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-indigo-300 font-bold text-xs border border-indigo-500/30 transition-all"
+                >
+                  Carregar mais trechos ({filteredSegments.length - visibleSegmentsLimit} restantes)
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

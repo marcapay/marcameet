@@ -1,13 +1,39 @@
-import { ActiveMeetingSessionState, AudioChunkMetadata, CompleteMeetingDetails } from "@/types/database";
+import { ActiveMeetingSessionState, AudioChunkMetadata, CompleteMeetingDetails, UserAccount } from "@/types/database";
 
 const DB_NAME = "MarcameetRecordingDB";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 const STORE_SESSION = "active_session";
 const STORE_CHUNKS = "audio_chunks_queue";
 const STORE_COMPLETED_MEETINGS = "completed_meetings_v1";
+const STORE_USER_ACCOUNTS = "user_accounts_v1";
+
+let dbInstance: IDBDatabase | null = null;
+let persistenceRequested = false;
+
+export async function requestPersistentBrowserStorage(): Promise<boolean> {
+  if (typeof window === "undefined" || !navigator.storage || !navigator.storage.persist) {
+    return false;
+  }
+  try {
+    const isPersisted = await navigator.storage.persisted();
+    if (isPersisted) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
 
 function openDB(): Promise<IDBDatabase> {
+  if (!persistenceRequested && typeof window !== "undefined") {
+    persistenceRequested = true;
+    requestPersistentBrowserStorage().catch(() => {});
+  }
+
+  if (dbInstance) {
+    return Promise.resolve(dbInstance);
+  }
+
   return new Promise((resolve, reject) => {
     if (typeof window === "undefined" || !("indexedDB" in window)) {
       return reject(new Error("IndexedDB não é suportado neste ambiente."));
@@ -28,9 +54,18 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_COMPLETED_MEETINGS)) {
         db.createObjectStore(STORE_COMPLETED_MEETINGS, { keyPath: "meeting.id" });
       }
+      if (!db.objectStoreNames.contains(STORE_USER_ACCOUNTS)) {
+        const accountStore = db.createObjectStore(STORE_USER_ACCOUNTS, { keyPath: "email" });
+        accountStore.createIndex("id", "id", { unique: false });
+      }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      dbInstance = request.result;
+      dbInstance.onclose = () => { dbInstance = null; };
+      dbInstance.onerror = () => { dbInstance = null; };
+      resolve(dbInstance);
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -100,81 +135,44 @@ export async function clearActiveSessionInIndexedDB(meetingId?: string): Promise
   }
 }
 
+import { saveChunk, deleteChunk, clearSessionChunks } from "@/lib/recording/chunkStore";
+
 /**
- * Salva um bloco de áudio na fila local do IndexedDB
+ * Salva um bloco de áudio na fila local do IndexedDB (delegado ao chunkStore)
  */
 export async function saveChunkToIndexedDB(chunk: AudioChunkMetadata): Promise<void> {
-  try {
-    const db = await openDB();
-    const tx = db.transaction(STORE_CHUNKS, "readwrite");
-    const store = tx.objectStore(STORE_CHUNKS);
-    store.put(chunk);
-    return new Promise((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn("Falha ao salvar chunk no IndexedDB:", err);
-  }
+  if (!chunk.blob) return;
+  await saveChunk({
+    id: chunk.id || `${chunk.meeting_id}_${chunk.session_id}_${chunk.sequence_number}`,
+    sessionId: chunk.meeting_id || chunk.session_id,
+    sequence: chunk.sequence_number,
+    blob: chunk.blob,
+    mimeType: chunk.blob.type || "audio/webm",
+    createdAt: Date.now(),
+    retries: 0,
+  });
 }
 
 /**
  * Obtém todos os blocos de áudio pendentes na fila local do IndexedDB
  */
 export async function getPendingChunksFromIndexedDB(meetingId?: string): Promise<AudioChunkMetadata[]> {
-  try {
-    const db = await openDB();
-    const tx = db.transaction(STORE_CHUNKS, "readonly");
-    const store = tx.objectStore(STORE_CHUNKS);
-    const request = store.getAll();
-    return new Promise((resolve, reject) => {
-      request.onsuccess = () => {
-        let results = (request.result as AudioChunkMetadata[]) || [];
-        if (meetingId) {
-          results = results.filter((c) => c.meeting_id === meetingId);
-        }
-        // Ordenar por número de sequência crescente
-        results.sort((a, b) => a.sequence_number - b.sequence_number);
-        resolve(results);
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.warn("Falha ao obter chunks pendentes do IndexedDB:", err);
-    return [];
-  }
+  // Retorna array vazio para forçar o uso da fila sequencial de 1 item por vez via chunkStore e uploader
+  return [];
 }
 
 /**
- * Remove um bloco de áudio da fila local do IndexedDB após confirmação de upload pelo backend
+ * Remove um bloco de áudio da fila local do IndexedDB
  */
 export async function removeChunkFromIndexedDB(chunkId: string): Promise<void> {
-  try {
-    const db = await openDB();
-    const tx = db.transaction(STORE_CHUNKS, "readwrite");
-    const store = tx.objectStore(STORE_CHUNKS);
-    store.delete(chunkId);
-    return new Promise((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn("Falha ao remover chunk do IndexedDB:", err);
-  }
+  await deleteChunk(chunkId);
 }
 
 /**
  * Limpa todos os chunks de uma reunião específica no IndexedDB
  */
 export async function clearMeetingChunksInIndexedDB(meetingId: string): Promise<void> {
-  try {
-    const pending = await getPendingChunksFromIndexedDB(meetingId);
-    for (const chunk of pending) {
-      await removeChunkFromIndexedDB(chunk.id);
-    }
-  } catch (err) {
-    console.warn("Falha ao limpar chunks da reunião do IndexedDB:", err);
-  }
+  await clearSessionChunks(meetingId);
 }
 
 /**
@@ -229,5 +227,61 @@ export async function deleteCompletedMeetingFromIndexedDB(meetingId: string): Pr
     });
   } catch (err) {
     console.warn("Falha ao excluir reunião do IndexedDB:", err);
+  }
+}
+
+/**
+ * Salva uma conta de usuário no IndexedDB
+ */
+export async function saveUserAccountToIndexedDB(account: UserAccount): Promise<void> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_USER_ACCOUNTS, "readwrite");
+    const store = tx.objectStore(STORE_USER_ACCOUNTS);
+    store.put(account);
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn("Falha ao salvar conta de usuário no IndexedDB:", err);
+  }
+}
+
+/**
+ * Busca uma conta de usuário pelo email no IndexedDB
+ */
+export async function getUserAccountFromIndexedDB(email: string): Promise<UserAccount | null> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_USER_ACCOUNTS, "readonly");
+    const store = tx.objectStore(STORE_USER_ACCOUNTS);
+    const request = store.get(email.trim().toLowerCase());
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve((request.result as UserAccount) || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn("Falha ao buscar conta de usuário no IndexedDB:", err);
+    return null;
+  }
+}
+
+/**
+ * Lista todas as contas salvas no IndexedDB
+ */
+export async function getAllUserAccountsFromIndexedDB(): Promise<UserAccount[]> {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_USER_ACCOUNTS, "readonly");
+    const store = tx.objectStore(STORE_USER_ACCOUNTS);
+    const request = store.getAll();
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve((request.result as UserAccount[]) || []);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn("Falha ao listar contas no IndexedDB:", err);
+    return [];
   }
 }

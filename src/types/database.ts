@@ -17,14 +17,27 @@ export interface Profile {
   id: string;
   email: string;
   name: string | null;
+  company?: string | null;
   avatar_url: string | null;
   created_at: string;
   updated_at: string;
 }
 
+export interface UserAccount {
+  id: string;
+  email: string;
+  name: string;
+  company?: string;
+  password_hash: string;
+  created_at: string;
+  updated_at: string;
+  last_login_at: string;
+}
+
 export interface Meeting {
   id: string;
   user_id: string;
+  user_email?: string;
   title: string;
   description: string | null;
   meeting_date: string;

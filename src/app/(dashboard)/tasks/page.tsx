@@ -22,7 +22,7 @@ import {
   AlertTriangle,
   Trash2
 } from "lucide-react";
-import { getLocalMeetings, updateSpeakerNameInMeeting, deleteLocalMeeting } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, updateSpeakerNameInMeeting, deleteLocalMeeting, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
 
@@ -63,6 +63,10 @@ function TasksContent() {
 
   useEffect(() => {
     reloadMeetings();
+    const unsubscribe = subscribeLocalMeetings(() => {
+      reloadMeetings();
+    });
+    return () => unsubscribe();
   }, [meetingIdParam]);
 
   const showToast = (msg: string) => {

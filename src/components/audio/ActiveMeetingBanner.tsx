@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { Radio, Mic, AlertTriangle, ArrowRight, Square, Play } from "lucide-react";
+import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 import { ActiveMeetingSessionState } from "@/types/database";
 
@@ -11,7 +12,6 @@ export function ActiveMeetingBanner() {
   const pathname = usePathname();
 
   const [activeSession, setActiveSession] = useState<ActiveMeetingSessionState | null>(null);
-  const [seconds, setSeconds] = useState(0);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
 
@@ -20,13 +20,10 @@ export function ActiveMeetingBanner() {
     const unsubscribe = recordingEngine.subscribe({
       onStatusChange: (status, session) => {
         if (session && status !== "finished" && status !== "idle") {
-          setActiveSession({ ...session });
+          setActiveSession(session);
         } else {
           setActiveSession(null);
         }
-      },
-      onTimerTick: (sec) => {
-        setSeconds(sec);
       },
     });
 
@@ -34,7 +31,6 @@ export function ActiveMeetingBanner() {
     recordingEngine.restoreActiveSessionOnLoad().then((session) => {
       if (session && session.status !== "finished") {
         setActiveSession(session);
-        setSeconds(recordingEngine.getElapsedSeconds());
       }
     });
 
@@ -107,7 +103,7 @@ export function ActiveMeetingBanner() {
                 {activeSession.title}
               </p>
               <p className="text-[10px] text-slate-300">
-                Duração real: <span className="font-mono font-bold text-amber-300">{formatTimer(seconds)}</span> • O áudio continua sendo salvo com segurança em segundo plano.
+                Duração real: <RecordingTimerDisplay className="font-mono font-bold text-amber-300" /> • O áudio continua sendo salvo com segurança em segundo plano.
               </p>
             </div>
           </div>

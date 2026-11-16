@@ -15,11 +15,6 @@ export function BackgroundModePrompt() {
       setIsEnabled(active);
       const dismissed = localStorage.getItem("marcameet_bg_prompt_dismissed") === "true";
       setIsDismissed(dismissed);
-
-      if (active) {
-        // Garantir que os serviços de keep-alive estejam sincronizados ao carregar a página
-        enableBackgroundMode().catch(() => {});
-      }
     }
   }, []);
 

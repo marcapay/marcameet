@@ -1,115 +1,308 @@
-import { CompleteMeetingDetails } from "@/types/database";
-import { deleteMeetingFromSupabase, saveMeetingToSupabase } from "@/lib/supabase/client";
+import { CompleteMeetingDetails, UserAccount } from "@/types/database";
+import {
+  deleteMeetingFromSupabase,
+  saveMeetingToSupabase,
+  fetchMeetingsFromSupabase,
+  isSupabaseConfigured,
+} from "@/lib/supabase/client";
 import {
   saveCompletedMeetingToIndexedDB,
   getCompletedMeetingsFromIndexedDB,
   deleteCompletedMeetingFromIndexedDB,
+  requestPersistentBrowserStorage,
 } from "@/lib/storage/indexedDbQueue";
+import { getCurrentAccount, subscribeAccountChange } from "@/lib/auth/accountSystem";
 
 const STORAGE_KEY_MEETINGS = "marcameet_meetings_v2";
+const getAccountStorageKey = (accountId: string) => `marcameet_meetings_acc_${accountId}`;
 
 export const INITIAL_MOCK_MEETINGS: CompleteMeetingDetails[] = [];
 
-// Cache em memória para celular (evita perda se o localStorage estourar ou for limpo pelo sistema)
-let inMemoryMeetingsCache: CompleteMeetingDetails[] = [];
+// Cache em memória de todas as reuniões conhecidas no dispositivo
+let allMeetingsMap = new Map<string, CompleteMeetingDetails>();
+let isLocalStorageLoaded = false;
+let hasSyncedIndexedDB = false;
+let lastSyncedAccountId: string | null = null;
+const listeners = new Set<(meetings: CompleteMeetingDetails[]) => void>();
+
+export function subscribeLocalMeetings(callback: (meetings: CompleteMeetingDetails[]) => void): () => void {
+  listeners.add(callback);
+  return () => {
+    listeners.delete(callback);
+  };
+}
+
+function isLegacyMockMeeting(m: CompleteMeetingDetails): boolean {
+  if (!m?.meeting?.id) return true;
+  if (m.meeting.id === "m-101") return true;
+  if (m.meeting.title?.includes("Alinhamento Estratégico Q3")) return true;
+  if (m.meeting.title?.includes("Exemplo")) return true;
+  return false;
+}
+
+function isAnonymousUserId(userId?: string): boolean {
+  return !userId || userId === "u-001" || userId === "anonymous" || userId === "guest";
+}
+
+function filterMeetingsForCurrentUser(allList: CompleteMeetingDetails[], account: UserAccount | null): CompleteMeetingDetails[] {
+  const valid = allList.filter((m) => !isLegacyMockMeeting(m));
+
+  if (!account) {
+    // Mesmo sem login ativo, exibe as reuniões salvas localmente no dispositivo para nunca sumirem da tela
+    return valid.sort(
+      (a, b) => new Date(b.meeting.meeting_date).getTime() - new Date(a.meeting.meeting_date).getTime()
+    );
+  }
+
+  const cleanEmail = account.email.trim().toLowerCase();
+  return valid
+    .filter((m) => {
+      const mUserId = m.meeting.user_id;
+      const mEmail = m.meeting.user_email?.trim().toLowerCase();
+      return (
+        mUserId === account.id ||
+        (mEmail && mEmail === cleanEmail) ||
+        isAnonymousUserId(mUserId)
+      );
+    })
+    .sort((a, b) => new Date(b.meeting.meeting_date).getTime() - new Date(a.meeting.meeting_date).getTime());
+}
+
+function notifyListeners() {
+  const account = getCurrentAccount();
+  const list = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
+  listeners.forEach((fn) => {
+    try {
+      fn(list);
+    } catch (e) {}
+  });
+}
+
+function persistMeetingsToLocalStorage(account: UserAccount | null) {
+  if (typeof window === "undefined") return;
+  const allList = Array.from(allMeetingsMap.values()).filter((m) => !isLegacyMockMeeting(m));
+  allList.sort((a, b) => new Date(b.meeting.meeting_date).getTime() - new Date(a.meeting.meeting_date).getTime());
+
+  try {
+    localStorage.setItem(STORAGE_KEY_MEETINGS, JSON.stringify(allList));
+  } catch (e) {
+    try {
+      localStorage.setItem(STORAGE_KEY_MEETINGS, JSON.stringify(allList.slice(0, 15)));
+    } catch {}
+  }
+
+  if (account) {
+    const accountList = filterMeetingsForCurrentUser(allList, account);
+    try {
+      localStorage.setItem(getAccountStorageKey(account.id), JSON.stringify(accountList));
+    } catch {
+      try {
+        localStorage.setItem(getAccountStorageKey(account.id), JSON.stringify(accountList.slice(0, 15)));
+      } catch {}
+    }
+  }
+}
+
+/**
+ * Adota reuniões locais anônimas ("u-001") para a conta logada e sincroniza com IndexedDB e Nuvem
+ */
+function adoptAnonymousMeetingsForAccount(account: UserAccount): boolean {
+  let adoptedAny = false;
+  allMeetingsMap.forEach((item, id) => {
+    if (isAnonymousUserId(item.meeting.user_id) || !item.meeting.user_email) {
+      const updated: CompleteMeetingDetails = {
+        ...item,
+        meeting: {
+          ...item.meeting,
+          user_id: isAnonymousUserId(item.meeting.user_id) ? account.id : item.meeting.user_id,
+          user_email: item.meeting.user_email || account.email,
+        },
+      };
+      allMeetingsMap.set(id, updated);
+      saveCompletedMeetingToIndexedDB(updated).catch(() => {});
+      saveMeetingToSupabase(updated).catch(() => {});
+      adoptedAny = true;
+    }
+  });
+  return adoptedAny;
+}
+
+/**
+ * Sincroniza reuniões da conta com IndexedDB e Supabase Cloud
+ */
+export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; syncedCloud: boolean }> {
+  if (typeof window === "undefined") return { totalSaved: 0, syncedCloud: false };
+
+  await requestPersistentBrowserStorage().catch(() => {});
+  const account = getCurrentAccount();
+
+  // 1. Ler do IndexedDB
+  try {
+    const idbMeetings = await getCompletedMeetingsFromIndexedDB();
+    idbMeetings.forEach((item) => {
+      if (item?.meeting?.id && !isLegacyMockMeeting(item)) {
+        const existing = allMeetingsMap.get(item.meeting.id);
+        if (!existing || new Date(item.meeting.updated_at || 0) >= new Date(existing.meeting.updated_at || 0)) {
+          allMeetingsMap.set(item.meeting.id, item);
+        }
+      }
+    });
+  } catch {}
+
+  // 2. Ler do cache específico da conta no localStorage
+  if (account) {
+    try {
+      const rawAcc = localStorage.getItem(getAccountStorageKey(account.id));
+      if (rawAcc) {
+        const parsedAcc = JSON.parse(rawAcc) as CompleteMeetingDetails[];
+        parsedAcc.forEach((item) => {
+          if (item?.meeting?.id && !isLegacyMockMeeting(item) && !allMeetingsMap.has(item.meeting.id)) {
+            allMeetingsMap.set(item.meeting.id, item);
+          }
+        });
+      }
+    } catch {}
+
+    adoptAnonymousMeetingsForAccount(account);
+  }
+
+  // 3. Sincronizar com Supabase se configurado
+  let syncedCloud = false;
+  if (isSupabaseConfigured()) {
+    try {
+      const cloudMeetings = await fetchMeetingsFromSupabase(account?.id, account?.email);
+      cloudMeetings.forEach((cloudItem) => {
+        if (cloudItem?.meeting?.id && !isLegacyMockMeeting(cloudItem)) {
+          const localItem = allMeetingsMap.get(cloudItem.meeting.id);
+          // Se não existe localmente, ou se o local não tinha transcrição/resumo completo
+          if (!localItem) {
+            allMeetingsMap.set(cloudItem.meeting.id, cloudItem);
+            saveCompletedMeetingToIndexedDB(cloudItem).catch(() => {});
+          }
+        }
+      });
+
+      // Enviar reuniões locais da conta para o Supabase para garantir backup em nuvem
+      const currentList = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
+      await Promise.all(
+        currentList.slice(0, 30).map((m) =>
+          saveMeetingToSupabase(m).catch(() => false)
+        )
+      );
+      syncedCloud = true;
+    } catch {}
+  }
+
+  // 4. Garantir que todas as reuniões em memória estejam salvas no IndexedDB e localStorage
+  const finalAccountList = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
+  finalAccountList.forEach((m) => {
+    saveCompletedMeetingToIndexedDB(m).catch(() => {});
+  });
+  persistMeetingsToLocalStorage(account);
+  notifyListeners();
+
+  return {
+    totalSaved: finalAccountList.length,
+    syncedCloud,
+  };
+}
+
+// Ouvir mudanças de login/logout na conta para sincronizar imediatamente as reuniões do usuário
+if (typeof window !== "undefined") {
+  subscribeAccountChange((account) => {
+    if (account) {
+      adoptAnonymousMeetingsForAccount(account);
+      persistMeetingsToLocalStorage(account);
+    }
+    notifyListeners();
+    syncAccountMeetingsNow().catch(() => {});
+  });
+}
 
 export function getLocalMeetings(): CompleteMeetingDetails[] {
   if (typeof window === "undefined") return [];
 
-  let listFromStorage: CompleteMeetingDetails[] = [];
-  try {
-    const data = localStorage.getItem(STORAGE_KEY_MEETINGS);
-    if (data) {
-      listFromStorage = JSON.parse(data);
-    }
-  } catch (e) {
-    console.error("Erro ao carregar reuniões do localStorage:", e);
-  }
+  const account = getCurrentAccount();
 
-  // Combinar inMemory, localStorage e filtrar reuniões de teste antigas
-  const mergedMap = new Map<string, CompleteMeetingDetails>();
-
-  inMemoryMeetingsCache.forEach((m) => {
-    if (m?.meeting?.id) mergedMap.set(m.meeting.id, m);
-  });
-
-  listFromStorage.forEach((m) => {
-    if (m?.meeting?.id && !mergedMap.has(m.meeting.id)) {
-      mergedMap.set(m.meeting.id, m);
-    }
-  });
-
-  const cleanList = Array.from(mergedMap.values()).filter(
-    (m) =>
-      m?.meeting?.id &&
-      m.meeting.id !== "m-101" &&
-      !m.meeting.title.includes("Alinhamento Estratégico Q3") &&
-      !m.meeting.title.includes("Exemplo")
-  );
-
-  // Atualizar cache em memória
-  inMemoryMeetingsCache = cleanList;
-
-  // Carregar assincronamente do IndexedDB para mesclar se o navegador no celular limpou o localStorage
-  if (typeof window !== "undefined") {
-    getCompletedMeetingsFromIndexedDB().then((idbMeetings) => {
-      if (idbMeetings && idbMeetings.length > 0) {
-        let hasNew = false;
-        idbMeetings.forEach((idbItem) => {
-          if (idbItem?.meeting?.id && !mergedMap.has(idbItem.meeting.id)) {
-            mergedMap.set(idbItem.meeting.id, idbItem);
-            hasNew = true;
+  if (!isLocalStorageLoaded) {
+    isLocalStorageLoaded = true;
+    try {
+      const data = localStorage.getItem(STORAGE_KEY_MEETINGS);
+      if (data) {
+        const listFromStorage = JSON.parse(data) as CompleteMeetingDetails[];
+        listFromStorage.forEach((m) => {
+          if (m?.meeting?.id && !isLegacyMockMeeting(m)) {
+            allMeetingsMap.set(m.meeting.id, m);
           }
         });
-        if (hasNew) {
-          const updatedFull = Array.from(mergedMap.values());
-          inMemoryMeetingsCache = updatedFull;
-          try {
-            localStorage.setItem(STORAGE_KEY_MEETINGS, JSON.stringify(updatedFull.slice(0, 20)));
-          } catch (e) {}
-        }
       }
-    }).catch(() => {});
+    } catch (e) {
+      console.error("Erro ao carregar reuniões do localStorage:", e);
+    }
   }
 
-  return cleanList;
+  if (account) {
+    try {
+      const accData = localStorage.getItem(getAccountStorageKey(account.id));
+      if (accData) {
+        const accList = JSON.parse(accData) as CompleteMeetingDetails[];
+        accList.forEach((m) => {
+          if (m?.meeting?.id && !isLegacyMockMeeting(m) && !allMeetingsMap.has(m.meeting.id)) {
+            allMeetingsMap.set(m.meeting.id, m);
+          }
+        });
+      }
+    } catch {}
+
+    if (adoptAnonymousMeetingsForAccount(account)) {
+      persistMeetingsToLocalStorage(account);
+    }
+  }
+
+  // Sincronizar assincronamente com IndexedDB e Supabase na inicialização ou ao trocar de conta
+  if (!hasSyncedIndexedDB || (account && lastSyncedAccountId !== account.id)) {
+    hasSyncedIndexedDB = true;
+    lastSyncedAccountId = account?.id || null;
+    syncAccountMeetingsNow().catch(() => {});
+  }
+
+  return filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
 }
 
 export function saveLocalMeeting(details: CompleteMeetingDetails): void {
   if (typeof window === "undefined" || !details?.meeting?.id) return;
 
-  const current = getLocalMeetings();
-  const index = current.findIndex((m) => m.meeting.id === details.meeting.id);
-  if (index >= 0) {
-    current[index] = details;
-  } else {
-    current.unshift(details);
-  }
+  const account = getCurrentAccount();
+
+  // Vincular automaticamente à conta logada
+  const enrichedDetails: CompleteMeetingDetails = {
+    ...details,
+    meeting: {
+      ...details.meeting,
+      user_id: account ? account.id : details.meeting.user_id || "u-001",
+      user_email: account ? account.email : details.meeting.user_email,
+      updated_at: new Date().toISOString(),
+    },
+    tasks: (details.tasks || []).map((t) => ({
+      ...t,
+      user_id: account ? account.id : t.user_id || "u-001",
+    })),
+  };
 
   // 1. Atualizar cache em memória
-  inMemoryMeetingsCache = current;
+  allMeetingsMap.set(enrichedDetails.meeting.id, enrichedDetails);
+  notifyListeners();
 
-  // 2. Salvar no localStorage com proteção total a QuotaExceededError (comum em navegadores de celular)
-  try {
-    localStorage.setItem(STORAGE_KEY_MEETINGS, JSON.stringify(current));
-  } catch (e) {
-    console.warn("QuotaExceededError no localStorage do celular. Reduzindo histórico salvo no localStorage...", e);
-    try {
-      // Manter apenas as 10 reuniões mais recentes no localStorage se o celular tiver cota restrita
-      const compact = current.slice(0, 10);
-      localStorage.setItem(STORAGE_KEY_MEETINGS, JSON.stringify(compact));
-    } catch (e2) {
-      console.error("Erro crítico ao salvar no localStorage no celular:", e2);
-    }
-  }
+  // 2. Salvar no localStorage (geral e da conta) com proteção a QuotaExceededError
+  persistMeetingsToLocalStorage(account);
 
-  // 3. Salvar no IndexedDB (armazenamento robusto e com cota ilimitada no celular)
-  saveCompletedMeetingToIndexedDB(details).catch((err) =>
-    console.warn("Falha ao salvar reunião no IndexedDB local do celular:", err)
+  // 3. Salvar no IndexedDB (armazenamento permanente sem limite de cota)
+  saveCompletedMeetingToIndexedDB(enrichedDetails).catch((err) =>
+    console.warn("Falha ao salvar reunião no IndexedDB local:", err)
   );
 
-  // 4. Sincronizar criação/atualização no Supabase (tabela marcameet) de forma transparente
-  saveMeetingToSupabase(details).catch((err) =>
+  // 4. Sincronizar criação/atualização no Supabase de forma transparente
+  saveMeetingToSupabase(enrichedDetails).catch((err) =>
     console.warn("Falha na sincronização assíncrona com Supabase:", err)
   );
 }
@@ -117,13 +310,12 @@ export function saveLocalMeeting(details: CompleteMeetingDetails): void {
 export async function deleteLocalMeeting(meetingId: string): Promise<void> {
   if (typeof window === "undefined") return;
 
-  // 1. Excluir do armazenamento local e em memória
-  inMemoryMeetingsCache = inMemoryMeetingsCache.filter((m) => m.meeting.id !== meetingId);
-  const current = getLocalMeetings();
-  const updated = current.filter((m) => m.meeting.id !== meetingId);
-  try {
-    localStorage.setItem(STORAGE_KEY_MEETINGS, JSON.stringify(updated));
-  } catch (e) {}
+  const account = getCurrentAccount();
+
+  // 1. Excluir da memória e do localStorage
+  allMeetingsMap.delete(meetingId);
+  persistMeetingsToLocalStorage(account);
+  notifyListeners();
 
   // 2. Excluir do IndexedDB
   await deleteCompletedMeetingFromIndexedDB(meetingId);
@@ -137,10 +329,8 @@ export function updateSpeakerNameInMeeting(meetingId: string, oldSpeaker: string
   const target = current.find((m) => m.meeting.id === meetingId);
   if (!target || !target.transcript) return null;
 
-  // Update speaker_map
   target.transcript.speaker_map[oldSpeaker] = newSpeaker;
 
-  // Update in segments
   if (target.transcript.segments) {
     target.transcript.segments = target.transcript.segments.map((seg) => {
       if (seg.speaker === oldSpeaker) {
@@ -150,7 +340,6 @@ export function updateSpeakerNameInMeeting(meetingId: string, oldSpeaker: string
     });
   }
 
-  // Update quotes
   target.quotes = target.quotes.map((q) => {
     if (q.speaker === oldSpeaker) {
       return { ...q, speaker: newSpeaker };
@@ -176,6 +365,76 @@ export function updateMeetingTitle(meetingId: string, newTitle: string): Complet
 
   saveLocalMeeting(target);
   return target;
+}
+
+/**
+ * Exporta todas as reuniões da conta atual em formato JSON para backup seguro
+ */
+export function exportMeetingsBackupJson(): string {
+  const account = getCurrentAccount();
+  const meetings = getLocalMeetings();
+  const payload = {
+    app: "Marca Meet",
+    version: "2.0",
+    exported_at: new Date().toISOString(),
+    account: account
+      ? {
+          id: account.id,
+          name: account.name,
+          email: account.email,
+          company: account.company,
+        }
+      : null,
+    meetings_count: meetings.length,
+    meetings,
+  };
+  return JSON.stringify(payload, null, 2);
+}
+
+/**
+ * Importa e restaura reuniões de um arquivo de backup JSON na conta atual
+ */
+export async function importMeetingsBackupJson(
+  jsonText: string
+): Promise<{ importedCount: number; totalCount: number }> {
+  const parsed = JSON.parse(jsonText);
+  const list: CompleteMeetingDetails[] = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsed?.meetings)
+    ? parsed.meetings
+    : [];
+
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error("Nenhuma reunião válida encontrada no arquivo de backup.");
+  }
+
+  let importedCount = 0;
+  const account = getCurrentAccount();
+
+  for (const item of list) {
+    if (item?.meeting?.id && item?.meeting?.title) {
+      const enriched: CompleteMeetingDetails = {
+        ...item,
+        meeting: {
+          ...item.meeting,
+          user_id: account ? account.id : item.meeting.user_id || "u-001",
+          user_email: account ? account.email : item.meeting.user_email,
+        },
+      };
+      allMeetingsMap.set(enriched.meeting.id, enriched);
+      await saveCompletedMeetingToIndexedDB(enriched);
+      saveMeetingToSupabase(enriched).catch(() => {});
+      importedCount++;
+    }
+  }
+
+  persistMeetingsToLocalStorage(account);
+  notifyListeners();
+
+  return {
+    importedCount,
+    totalCount: getLocalMeetings().length,
+  };
 }
 
 export function clearAllLocalMeetings(): void {

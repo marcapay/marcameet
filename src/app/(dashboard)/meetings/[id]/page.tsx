@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useDeferredValue, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   FileText,
@@ -28,7 +28,7 @@ import {
   Bot,
   ChevronRight
 } from "lucide-react";
-import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
 import { askMeetingAI, MeetingChatMessage } from "@/lib/ai";
@@ -70,11 +70,21 @@ export default function MeetingDetailPage() {
   };
 
   useEffect(() => {
-    const list = getLocalMeetings();
-    const found = list.find((m) => m.meeting.id === id);
-    if (found) {
-      setDetails(found);
-    }
+    const load = () => {
+      const list = getLocalMeetings();
+      const found = list.find((m) => m.meeting.id === id);
+      if (found) {
+        setDetails(found);
+      }
+    };
+    load();
+    const unsubscribe = subscribeLocalMeetings((list) => {
+      const found = list.find((m) => m.meeting.id === id);
+      if (found) {
+        setDetails(found);
+      }
+    });
+    return () => unsubscribe();
   }, [id]);
 
   if (!details) {
@@ -182,11 +192,24 @@ export default function MeetingDetailPage() {
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
-  // Transcrição Filtrada
-  const filteredSegments = (transcript?.segments || []).filter((seg) =>
-    seg.text.toLowerCase().includes(transcriptSearch.toLowerCase()) ||
-    seg.speaker.toLowerCase().includes(transcriptSearch.toLowerCase())
-  );
+  // Transcrição Filtrada com useDeferredValue e useMemo
+  const deferredSearch = useDeferredValue(transcriptSearch);
+  const [visibleSegmentsLimit, setVisibleSegmentsLimit] = useState(60);
+
+  const filteredSegments = useMemo(() => {
+    const segments = transcript?.segments || [];
+    const query = deferredSearch.trim().toLowerCase();
+    if (!query) return segments;
+    return segments.filter(
+      (seg) =>
+        seg.text.toLowerCase().includes(query) ||
+        seg.speaker.toLowerCase().includes(query)
+    );
+  }, [transcript?.segments, deferredSearch]);
+
+  const visibleSegments = useMemo(() => {
+    return filteredSegments.slice(0, visibleSegmentsLimit);
+  }, [filteredSegments, visibleSegmentsLimit]);
 
   return (
     <div className="space-y-6 animate-fadeIn pb-12">
@@ -806,7 +829,7 @@ export default function MeetingDetailPage() {
             </h2>
 
             <div className="space-y-4 divide-y divide-slate-800/60">
-              {filteredSegments.map((seg) => (
+              {visibleSegments.map((seg) => (
                 <div key={seg.id} className="pt-4 first:pt-0 space-y-1.5 group">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -837,6 +860,17 @@ export default function MeetingDetailPage() {
                 </div>
               ))}
             </div>
+
+            {filteredSegments.length > visibleSegmentsLimit && (
+              <div className="pt-4 text-center">
+                <button
+                  onClick={() => setVisibleSegmentsLimit((prev) => prev + 60)}
+                  className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-indigo-300 font-bold text-xs border border-indigo-500/30 transition-all"
+                >
+                  Carregar mais trechos ({filteredSegments.length - visibleSegmentsLimit} restantes)
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
