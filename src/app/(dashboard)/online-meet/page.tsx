@@ -31,6 +31,7 @@ import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
+import { generateUuid, getCurrentAccount } from "@/lib/auth/accountSystem";
 
 
 export type OnlineMeetingStatus =
@@ -108,7 +109,7 @@ export default function OnlineMeetingPage() {
   const accumulatedTimeRef = useRef<number>(0);
   const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const meetingIdRef = useRef<string>(`m-online-${Date.now()}`);
+  const meetingIdRef = useRef<string>(generateUuid());
   const isChunkProcessingRef = useRef<boolean>(false);
   const speechRecognitionRef = useRef<any>(null);
 
@@ -396,11 +397,13 @@ export default function OnlineMeetingPage() {
 
     let finalDuration = seconds;
     let meetingId = meetingIdRef.current;
+    let engineTranscriptDraft = "";
 
     try {
       const engineResult = await recordingEngine.finishMeeting();
       finalDuration = engineResult.durationSeconds;
       meetingId = engineResult.meetingId;
+      engineTranscriptDraft = engineResult.transcriptDraft || "";
     } catch (err) {
       console.warn("Aviso ao encerrar engine:", err);
     }
@@ -417,7 +420,7 @@ export default function OnlineMeetingPage() {
 
     const fullRawText = segments.length > 0
       ? segments.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n")
-      : "Reunião finalizada sem trecho de fala gravado.";
+      : engineTranscriptDraft || "Reunião finalizada sem trecho de fala gravado.";
 
 
     let aiData: any = null;

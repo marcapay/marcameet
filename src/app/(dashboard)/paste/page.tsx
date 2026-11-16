@@ -6,6 +6,7 @@ import { FileText, Sparkles, CheckCircle2 } from "lucide-react";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAIAnalysis } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
+import { generateUuid } from "@/lib/auth/accountSystem";
 
 export default function PastePage() {
   const router = useRouter();
@@ -18,7 +19,7 @@ export default function PastePage() {
     if (!pastedText.trim()) return;
 
     setIsProcessing(true);
-    const newMeetingId = `m-${Date.now()}`;
+    const newMeetingId = generateUuid();
     const meetingTitle = title.trim() || `Transcrição Colada - ${new Date().toLocaleDateString("pt-BR")}`;
 
     // 1. Registro inicial

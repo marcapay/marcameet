@@ -19,23 +19,59 @@ let currentAccountCache: UserAccount | null = null;
 let isInitialized = false;
 const accountListeners = new Set<(account: UserAccount | null) => void>();
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
- * Gera um ID determinístico baseado no e-mail para que a mesma conta tenha sempre o mesmo user_id em qualquer dispositivo
+ * Converte qualquer string (ex: email, "m-173...", "usr_...") em um UUID v4 válido e determinístico.
+ * Se já for um UUID válido, retorna em lowercase.
  */
-export function generateDeterministicUserId(email: string): string {
-  const clean = email.trim().toLowerCase();
+export function toValidUuid(input: string): string {
+  const clean = (input || "").trim();
+  if (UUID_REGEX.test(clean)) {
+    return clean.toLowerCase();
+  }
+
   let h1 = 0xdeadbeef ^ clean.length;
   let h2 = 0x41c6ce57 ^ clean.length;
-  for (let i = 0, ch; i < clean.length; i++) {
-    ch = clean.charCodeAt(i);
+  let h3 = 0x811c9dc5 ^ clean.length;
+  let h4 = 0xc9dc5118 ^ clean.length;
+
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean.charCodeAt(i);
     h1 = Math.imul(h1 ^ ch, 2654435761);
     h2 = Math.imul(h2 ^ ch, 1597334677);
+    h3 = Math.imul(h3 ^ ch, 0x01000193);
+    h4 = Math.imul(h4 ^ ch, 0x5bd1e995);
   }
+
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  h3 = Math.imul(h3 ^ (h3 >>> 16), 2246822507) ^ Math.imul(h4 ^ (h4 >>> 13), 3266489909);
+  h4 = Math.imul(h4 ^ (h4 >>> 16), 2246822507) ^ Math.imul(h3 ^ (h3 >>> 13), 3266489909);
+
   const hex1 = (h1 >>> 0).toString(16).padStart(8, "0");
   const hex2 = (h2 >>> 0).toString(16).padStart(8, "0");
-  return `usr_${hex1}${hex2}`;
+  const hex3 = (h3 >>> 0).toString(16).padStart(8, "0");
+  const hex4 = (h4 >>> 0).toString(16).padStart(8, "0");
+
+  return `${hex1}-${hex2.slice(0, 4)}-4${hex2.slice(5, 8)}-8${hex3.slice(1, 4)}-${hex3.slice(4, 8)}${hex4}`;
+}
+
+/**
+ * Gera um novo UUID v4 válido para novas reuniões
+ */
+export function generateUuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return toValidUuid(`mm_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+}
+
+/**
+ * Gera um UUID determinístico baseado no e-mail para que a mesma conta tenha sempre o mesmo user_id (compatível com colunas UUID do Supabase)
+ */
+export function generateDeterministicUserId(email: string): string {
+  return toValidUuid(`marcameet_user:${email.trim().toLowerCase()}`);
 }
 
 /**
@@ -103,6 +139,12 @@ export function getCurrentAccount(): UserAccount | null {
     if (raw) {
       const parsed = JSON.parse(raw) as UserAccount;
       if (parsed && parsed.email && parsed.id) {
+        // Garantir que o ID da conta seja sempre um UUID válido para o Supabase
+        const normalizedId = generateDeterministicUserId(parsed.email);
+        if (parsed.id !== normalizedId) {
+          parsed.id = normalizedId;
+          setStoredKey(STORAGE_KEY_ACTIVE_ACCOUNT, JSON.stringify(parsed));
+        }
         currentAccountCache = parsed;
         isInitialized = true;
         return parsed;
@@ -116,6 +158,14 @@ export function getCurrentAccount(): UserAccount | null {
 
 export function setActiveAccountSession(account: UserAccount | null): void {
   if (typeof window === "undefined") return;
+
+  if (account) {
+    account = {
+      ...account,
+      id: generateDeterministicUserId(account.email),
+    };
+  }
+
   currentAccountCache = account;
   isInitialized = true;
 
@@ -169,13 +219,14 @@ export async function registerAccount(params: {
     if (existing.password_hash === passwordHash) {
       const updatedAccount: UserAccount = {
         ...existing,
+        id: generateDeterministicUserId(cleanEmail),
         name: cleanName || existing.name,
         company: params.company?.trim() || existing.company,
         updated_at: new Date().toISOString(),
         last_login_at: new Date().toISOString(),
       };
       setActiveAccountSession(updatedAccount);
-      saveUserAccountToSupabase(updatedAccount).catch(() => {});
+      await saveUserAccountToSupabase(updatedAccount).catch(() => {});
       return { success: true, account: updatedAccount };
     }
     return {
@@ -213,9 +264,9 @@ export async function registerAccount(params: {
       .catch(() => {});
   }
 
-  // Salvar na tabela marcameet_users do Supabase + IndexedDB + LocalStorage
-  saveUserAccountToSupabase(newAccount).catch(() => {});
+  // Salvar no Supabase + IndexedDB + LocalStorage
   setActiveAccountSession(newAccount);
+  await saveUserAccountToSupabase(newAccount).catch(() => {});
 
   return { success: true, account: newAccount };
 }
@@ -239,13 +290,11 @@ export async function loginAccount(params: {
 
   const passwordHash = hashAccountPassword(cleanEmail, password);
 
-  // 1. Buscar no registro local / IndexedDB
-  const registry = getLocalAccountsRegistry();
-  let account: UserAccount | null = registry[cleanEmail] || (await getUserAccountFromIndexedDB(cleanEmail));
-
-  // 2. Buscar no Supabase (caso o usuário esteja entrando de outro dispositivo ou navegador)
+  // 1. Buscar no Supabase primeiro para ter os dados mais recentes da nuvem, ou local / IndexedDB
+  let account: UserAccount | null = await fetchUserAccountFromSupabase(cleanEmail);
   if (!account) {
-    account = await fetchUserAccountFromSupabase(cleanEmail);
+    const registry = getLocalAccountsRegistry();
+    account = registry[cleanEmail] || (await getUserAccountFromIndexedDB(cleanEmail));
   }
 
   if (account) {
@@ -255,14 +304,15 @@ export async function loginAccount(params: {
 
     const updated: UserAccount = {
       ...account,
+      id: generateDeterministicUserId(cleanEmail),
       last_login_at: new Date().toISOString(),
     };
     setActiveAccountSession(updated);
-    saveUserAccountToSupabase(updated).catch(() => {});
+    await saveUserAccountToSupabase(updated).catch(() => {});
     return { success: true, account: updated };
   }
 
-  // 3. Tentar autenticar diretamente via Supabase Auth caso o usuário tenha sido criado lá
+  // 2. Tentar autenticar diretamente via Supabase Auth caso o usuário tenha sido criado lá
   const supa = getSupabaseClient();
   if (supa) {
     try {
@@ -283,7 +333,7 @@ export async function loginAccount(params: {
           last_login_at: now,
         };
         setActiveAccountSession(recoveredAccount);
-        saveUserAccountToSupabase(recoveredAccount).catch(() => {});
+        await saveUserAccountToSupabase(recoveredAccount).catch(() => {});
         return { success: true, account: recoveredAccount };
       }
     } catch {}
@@ -291,7 +341,7 @@ export async function loginAccount(params: {
 
   return {
     success: false,
-    error: "Conta não encontrada com este e-mail. Clique em 'Criar Nova Conta' para se cadastrar rapidamente.",
+    error: "Conta não encontrada com este e-mail. Clique em 'Criar Conta' para se cadastrar rapidamente.",
   };
 }
 
@@ -311,10 +361,10 @@ export async function resetAccountPassword(params: {
   }
 
   const registry = getLocalAccountsRegistry();
-  let account: UserAccount | null =
+  const account: UserAccount | null =
+    (await fetchUserAccountFromSupabase(cleanEmail)) ||
     registry[cleanEmail] ||
-    (await getUserAccountFromIndexedDB(cleanEmail)) ||
-    (await fetchUserAccountFromSupabase(cleanEmail));
+    (await getUserAccountFromIndexedDB(cleanEmail));
 
   const newHash = hashAccountPassword(cleanEmail, params.newPassword);
   const now = new Date().toISOString();
@@ -328,13 +378,14 @@ export async function resetAccountPassword(params: {
 
   const updated: UserAccount = {
     ...account,
+    id: generateDeterministicUserId(cleanEmail),
     password_hash: newHash,
     updated_at: now,
     last_login_at: now,
   };
 
   setActiveAccountSession(updated);
-  saveUserAccountToSupabase(updated).catch(() => {});
+  await saveUserAccountToSupabase(updated).catch(() => {});
   return { success: true, account: updated };
 }
 
@@ -350,13 +401,14 @@ export async function updateAccountProfile(params: {
 
   const updated: UserAccount = {
     ...current,
+    id: generateDeterministicUserId(current.email),
     name: params.name.trim() || current.name,
     company: params.company?.trim() || undefined,
     updated_at: new Date().toISOString(),
   };
 
   setActiveAccountSession(updated);
-  saveUserAccountToSupabase(updated).catch(() => {});
+  await saveUserAccountToSupabase(updated).catch(() => {});
   return updated;
 }
 

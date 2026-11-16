@@ -4,6 +4,7 @@ import {
   saveMeetingToSupabase,
   fetchMeetingsFromSupabase,
   isSupabaseConfigured,
+  ensureValidUuid,
 } from "@/lib/supabase/client";
 import {
   saveCompletedMeetingToIndexedDB,
@@ -173,9 +174,16 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
       const cloudMeetings = await fetchMeetingsFromSupabase(account?.id, account?.email);
       cloudMeetings.forEach((cloudItem) => {
         if (cloudItem?.meeting?.id && !isLegacyMockMeeting(cloudItem)) {
-          const localItem = allMeetingsMap.get(cloudItem.meeting.id);
-          // Se não existe localmente, ou se o local não tinha transcrição/resumo completo
-          if (!localItem) {
+          const cloudUuid = ensureValidUuid(cloudItem.meeting.id);
+          let hasMatch = allMeetingsMap.has(cloudItem.meeting.id) || allMeetingsMap.has(cloudUuid);
+          if (!hasMatch) {
+            allMeetingsMap.forEach((_, existingKey) => {
+              if (ensureValidUuid(existingKey) === cloudUuid) {
+                hasMatch = true;
+              }
+            });
+          }
+          if (!hasMatch) {
             allMeetingsMap.set(cloudItem.meeting.id, cloudItem);
             saveCompletedMeetingToIndexedDB(cloudItem).catch(() => {});
           }

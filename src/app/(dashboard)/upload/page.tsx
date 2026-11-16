@@ -6,6 +6,7 @@ import { Upload, FileAudio, FileVideo, CheckCircle2, Sparkles, AlertCircle, Arro
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
+import { generateUuid } from "@/lib/auth/accountSystem";
 
 export default function UploadPage() {
   const router = useRouter();
@@ -37,7 +38,7 @@ export default function UploadPage() {
 
     const isVideo = selectedFile.type.startsWith("video/") || selectedFile.name.endsWith(".mp4") || selectedFile.name.endsWith(".webm");
     const sourceType = isVideo ? ("video_upload" as const) : ("audio_upload" as const);
-    const newMeetingId = `m-${Date.now()}`;
+    const newMeetingId = generateUuid();
     const meetingTitle = title.trim() || selectedFile.name;
 
     // 1. Criar registro inicial

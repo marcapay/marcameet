@@ -21,8 +21,10 @@ import {
   syncActiveMeetingToSupabase,
   fetchActiveMeetingFromSupabase,
   closeActiveMeetingInSupabase,
+  saveLiveTranscriptToSupabase,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
+import { getCurrentAccount } from "@/lib/auth/accountSystem";
 import {
   requestScreenWakeLock,
   releaseScreenWakeLock,
@@ -287,10 +289,12 @@ class RecordingEngineService {
 
     const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const nowIso = new Date().toISOString();
+    const currentAccount = getCurrentAccount();
 
     const sessionState: ActiveMeetingSessionState = {
       meeting_id: meetingId,
       session_id: sessionId,
+      user_id: currentAccount?.id || "u-001",
       title: title || "Reunião Sem Título",
       source_type: sourceType,
       status: "recording",
@@ -303,9 +307,22 @@ class RecordingEngineService {
       accumulated_paused_ms: 0,
       wake_lock_enabled: wakeLockEnabled,
       transcript_draft: "",
-      speaker_map: {},
+      speaker_map: { "Participante 1": "Participante 1" },
       segments_draft: [],
     };
+
+    // Criar registro inicial da reunião e transcrição no Supabase vinculado à conta da pessoa
+    saveLiveTranscriptToSupabase({
+      meetingId,
+      userId: currentAccount?.id,
+      userEmail: currentAccount?.email,
+      title: sessionState.title,
+      sourceType,
+      durationSeconds: 0,
+      rawText: "Gravação iniciada...",
+      speakerMap: sessionState.speaker_map,
+      segments: [],
+    }).catch(() => {});
 
     this.activeSession = sessionState;
     this.mediaStream = stream;
@@ -406,8 +423,47 @@ class RecordingEngineService {
   }
 
   /**
-   * Disparar fila de upload do IndexedDB
+   * Disparar fila de upload do IndexedDB e salvar transcrição progressiva no Supabase na conta do usuário
    */
+  private handleChunkTranscriptionResult(text: string, segments: any[]) {
+    if (!this.activeSession) return;
+    const currentDraft = this.activeSession.transcript_draft || "";
+    const updatedDraft = currentDraft ? `${currentDraft}\n${text}` : text;
+    this.activeSession.transcript_draft = updatedDraft;
+
+    const currentSegs = this.activeSession.segments_draft || [];
+    const elapsedOffset = Math.max(0, this.getElapsedSeconds() - 5);
+    const mappedNewSegs = (segments && segments.length > 0
+      ? segments
+      : [{ start_time: 0, end_time: 5, speaker: "Participante 1", text }]
+    ).map((s: any, idx: number) => ({
+      id: `seg-${this.activeSession!.meeting_id}-${currentSegs.length + idx}`,
+      transcript_id: `t-${this.activeSession!.meeting_id}`,
+      meeting_id: this.activeSession!.meeting_id,
+      start_time: Number(s.start_time || 0) + elapsedOffset,
+      end_time: Number(s.end_time || 5) + elapsedOffset,
+      speaker: s.speaker || "Participante 1",
+      text: s.text || text,
+    }));
+
+    this.activeSession.segments_draft = [...currentSegs, ...mappedNewSegs];
+    this.notifyChunkTranscribed(text, segments);
+    saveActiveSessionToIndexedDB(this.activeSession);
+
+    const acc = getCurrentAccount();
+    saveLiveTranscriptToSupabase({
+      meetingId: this.activeSession.meeting_id,
+      userId: acc?.id || this.activeSession.user_id,
+      userEmail: acc?.email,
+      title: this.activeSession.title,
+      sourceType: this.activeSession.source_type,
+      durationSeconds: this.getElapsedSeconds(),
+      rawText: updatedDraft,
+      speakerMap: this.activeSession.speaker_map,
+      segments: this.activeSession.segments_draft,
+    }).catch(() => {});
+  }
+
   private triggerUploadQueue() {
     if (!this.activeSession) return;
     const meetingId = this.activeSession.meeting_id;
@@ -415,12 +471,7 @@ class RecordingEngineService {
     void processUploadQueue({
       targetSessionId: meetingId,
       onChunkTranscribed: (text, segments) => {
-        if (!this.activeSession) return;
-        const currentDraft = this.activeSession.transcript_draft || "";
-        const updatedDraft = currentDraft ? `${currentDraft}\n${text}` : text;
-        this.activeSession.transcript_draft = updatedDraft;
-        this.notifyChunkTranscribed(text, segments);
-        saveActiveSessionToIndexedDB(this.activeSession);
+        this.handleChunkTranscriptionResult(text, segments);
       },
     });
   }
@@ -594,13 +645,26 @@ class RecordingEngineService {
   }
 
   /**
-   * Atualizar rascunho da transcrição em texto puro (sem guardar blobs)
+   * Atualizar rascunho da transcrição em texto puro (sem guardar blobs) e sincronizar no Supabase
    */
   public updateTranscriptDraft(rawText: string, speakerMap?: Record<string, string>) {
     if (!this.activeSession) return;
     this.activeSession.transcript_draft = rawText;
     if (speakerMap) this.activeSession.speaker_map = speakerMap;
     saveActiveSessionToIndexedDB(this.activeSession);
+
+    const acc = getCurrentAccount();
+    saveLiveTranscriptToSupabase({
+      meetingId: this.activeSession.meeting_id,
+      userId: acc?.id || this.activeSession.user_id,
+      userEmail: acc?.email,
+      title: this.activeSession.title,
+      sourceType: this.activeSession.source_type,
+      durationSeconds: this.getElapsedSeconds(),
+      rawText,
+      speakerMap: this.activeSession.speaker_map,
+      segments: this.activeSession.segments_draft,
+    }).catch(() => {});
   }
 
   /**
@@ -608,9 +672,24 @@ class RecordingEngineService {
    */
   private async cleanupRecordingResources(): Promise<void> {
     if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
-      try {
-        this.mediaRecorder.stop();
-      } catch (e) {}
+      await new Promise<void>((resolve) => {
+        const rec = this.mediaRecorder!;
+        const timeout = setTimeout(resolve, 700);
+        rec.addEventListener(
+          "stop",
+          () => {
+            clearTimeout(timeout);
+            setTimeout(resolve, 150);
+          },
+          { once: true }
+        );
+        try {
+          rec.stop();
+        } catch {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
     }
     this.mediaRecorder = null;
 
@@ -655,7 +734,6 @@ class RecordingEngineService {
 
     releaseScreenWakeLock();
     stopAudioKeepAlive();
-    destroyUploader();
     this.revokeAllObjectURLs();
   }
 
@@ -668,6 +746,7 @@ class RecordingEngineService {
     durationSeconds: number;
     transcriptDraft: string;
     speakerMap: Record<string, string>;
+    segmentsDraft: any[];
   }> {
     if (!this.activeSession) {
       throw new Error("Nenhuma reunião ativa para finalizar.");
@@ -675,19 +754,28 @@ class RecordingEngineService {
 
     const finalMeetingId = this.activeSession.meeting_id;
     const finalDuration = this.getElapsedSeconds();
-    const finalTranscript = this.activeSession.transcript_draft || "";
-    const finalSpeakerMap = this.activeSession.speaker_map || {};
 
     console.log("🏁 [RecordingEngine] Encerrando gravação sem acúmulo de memória:", finalMeetingId);
 
     this.activeSession.status = "finishing";
     this.notifyStatusChange();
 
-    // 1. Limpar recursos e gravadores de áudio
+    // 1. Limpar recursos e aguardar último bloco de áudio do MediaRecorder
     await this.cleanupRecordingResources();
 
-    // 2. Drenar quaisquer chunks pendentes no IndexedDB
-    await processUploadQueue({ targetSessionId: finalMeetingId });
+    // 2. Drenar e transcrever todos os chunks pendentes no IndexedDB ANTES de ler a transcrição final!
+    await processUploadQueue({
+      targetSessionId: finalMeetingId,
+      onChunkTranscribed: (text, segments) => {
+        this.handleChunkTranscriptionResult(text, segments);
+      },
+    });
+
+    destroyUploader();
+
+    const finalTranscript = this.activeSession.transcript_draft || "";
+    const finalSpeakerMap = this.activeSession.speaker_map || { "Participante 1": "Participante 1" };
+    const finalSegments = this.activeSession.segments_draft || [];
 
     // 3. Marcar reunião como finalizada e limpar fila do IndexedDB
     this.activeSession.status = "finished";
@@ -702,6 +790,7 @@ class RecordingEngineService {
       durationSeconds: finalDuration,
       transcriptDraft: finalTranscript,
       speakerMap: finalSpeakerMap,
+      segmentsDraft: finalSegments,
     };
 
     this.notifyStatusChange();

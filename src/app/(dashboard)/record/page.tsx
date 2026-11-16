@@ -26,6 +26,7 @@ import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails, ActiveMeetingEngineStatus } from "@/types/database";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
+import { generateUuid, getCurrentAccount } from "@/lib/auth/accountSystem";
 
 export default function RecordPage() {
   const router = useRouter();
@@ -102,7 +103,7 @@ export default function RecordPage() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const meetingId = `m-${Date.now()}`;
+      const meetingId = generateUuid();
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
       await recordingEngine.startRecording({
@@ -175,12 +176,19 @@ export default function RecordPage() {
       const rawTextDraft = result.transcriptDraft || "Reunião presencial gravada com sucesso.";
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
       const tagsArray = tagsInput.split(",").map((t) => t.trim()).filter(Boolean);
+      const activeAccount = getCurrentAccount();
 
-      // Salvar Estrutura Inicial Imediatamente (Zero perda de dados)
+      const segmentsDraft =
+        result.segmentsDraft && result.segmentsDraft.length > 0
+          ? result.segmentsDraft
+          : [{ start_time: 0, end_time: duration || 5, speaker: "Participante 1", text: rawTextDraft }];
+
+      // Salvar Estrutura Inicial Imediatamente na Conta e no Supabase (com Transcrição já incluída!)
       const initialDetails: CompleteMeetingDetails = {
         meeting: {
           id: newMeetingId,
-          user_id: "u-001",
+          user_id: activeAccount?.id || "u-001",
+          user_email: activeAccount?.email,
           title: meetingTitle,
           description: description || "Gravação presencial iniciada pelo celular/computador.",
           meeting_date: new Date().toISOString(),
@@ -191,6 +199,21 @@ export default function RecordPage() {
           tags: tagsArray,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
+        },
+        transcript: {
+          id: `t-${newMeetingId}`,
+          meeting_id: newMeetingId,
+          raw_text: rawTextDraft,
+          speaker_map: result.speakerMap || { "Participante 1": "Participante 1" },
+          segments: segmentsDraft.map((s: any, i: number) => ({
+            id: `seg-${newMeetingId}-${i}`,
+            transcript_id: `t-${newMeetingId}`,
+            meeting_id: newMeetingId,
+            start_time: s.start_time || 0,
+            end_time: s.end_time || duration || 5,
+            speaker: s.speaker || "Participante 1",
+            text: s.text || rawTextDraft,
+          })),
         },
         highlights: [],
         decisions: [],
@@ -209,9 +232,6 @@ export default function RecordPage() {
 
       // 2. Iniciar Análise por IA
       setProcessingStatus("Gerando resumo executivo detalhado, decisões e tarefas com IA...");
-      const segmentsDraft = [
-        { start_time: 0, end_time: duration, speaker: "Participante 1", text: rawTextDraft }
-      ];
       const aiData = await processAIAnalysis(rawTextDraft, segmentsDraft);
 
       // 4. Mapear Tarefas no formato completo

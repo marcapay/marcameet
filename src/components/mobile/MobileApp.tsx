@@ -38,6 +38,7 @@ import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
+import { generateUuid, getCurrentAccount } from "@/lib/auth/accountSystem";
 
 
 export function MobileApp() {
@@ -165,7 +166,7 @@ export function MobileApp() {
   const startRecording = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const meetingId = `m-${Date.now()}`;
+      const meetingId = generateUuid();
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
 
@@ -222,11 +223,18 @@ export function MobileApp() {
       const rawTextDraft = engineResult.transcriptDraft || "Reunião gravada e processada.";
       const newMeetingId = engineResult.meetingId;
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+      const activeAccount = getCurrentAccount();
+
+      const segmentsDraft =
+        engineResult.segmentsDraft && engineResult.segmentsDraft.length > 0
+          ? engineResult.segmentsDraft
+          : [{ start_time: 0, end_time: duration || 5, speaker: "Participante 1", text: rawTextDraft }];
 
       const initialDetails: CompleteMeetingDetails = {
         meeting: {
           id: newMeetingId,
-          user_id: "u-001",
+          user_id: activeAccount?.id || "u-001",
+          user_email: activeAccount?.email,
           title: meetingTitle,
           description: "Gravação presencial rápida iniciada pelo dashboard principal.",
           meeting_date: new Date().toISOString(),
@@ -237,6 +245,21 @@ export function MobileApp() {
           tags: ["Presencial", "Rápida"],
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
+        },
+        transcript: {
+          id: `t-${newMeetingId}`,
+          meeting_id: newMeetingId,
+          raw_text: rawTextDraft,
+          speaker_map: engineResult.speakerMap || { "Participante 1": "Participante 1" },
+          segments: segmentsDraft.map((s: any, i: number) => ({
+            id: `seg-${newMeetingId}-${i}`,
+            transcript_id: `t-${newMeetingId}`,
+            meeting_id: newMeetingId,
+            start_time: s.start_time || 0,
+            end_time: s.end_time || duration || 5,
+            speaker: s.speaker || "Participante 1",
+            text: s.text || rawTextDraft,
+          })),
         },
         highlights: [],
         decisions: [],
@@ -254,9 +277,6 @@ export function MobileApp() {
       saveLocalMeeting(initialDetails);
 
       setProcessingStatus("Gerando resumo executivo, decisões e tarefas com IA...");
-      const segmentsDraft = [
-        { start_time: 0, end_time: duration, speaker: "Participante 1", text: rawTextDraft }
-      ];
       const aiData = await processAIAnalysis(rawTextDraft, segmentsDraft);
 
 
