@@ -37,6 +37,7 @@ import { requestScreenWakeLock, releaseScreenWakeLock, startAudioKeepAlive, stop
 import { CompleteMeetingDetails } from "@/types/database";
 import { MediaPlayer } from "@/components/audio/MediaPlayer";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
+import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 import { generateUuid, getCurrentAccount } from "@/lib/auth/accountSystem";
 
@@ -48,6 +49,7 @@ export function MobileApp() {
   const [title, setTitle] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [savedChunksCount, setSavedChunksCount] = useState(0);
   const [seconds, setSeconds] = useState(0);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
 
@@ -125,7 +127,11 @@ export function MobileApp() {
         } else {
           setIsRecording(false);
           setIsPaused(false);
+          setSavedChunksCount(0);
         }
+      },
+      onChunkCaptured: (_, seq) => {
+        setSavedChunksCount(seq);
       },
     });
 
@@ -133,6 +139,7 @@ export function MobileApp() {
     if (active && recordingEngine.hasLiveRecorder()) {
       setIsRecording(true);
       setIsPaused(active.recorder_status === "paused");
+      setSavedChunksCount(recordingEngine.getSavedChunksCount());
     }
 
     return () => {
@@ -199,14 +206,15 @@ export function MobileApp() {
     setIsPaused(false);
   };
 
-  // Cancelar Gravação
+  // Cancelar Gravação e Liberar Wake Lock
   const cancelRecording = async () => {
     if (confirm("Deseja cancelar a gravação atual? O áudio atual será encerrado.")) {
       try {
-        await recordingEngine.finishMeeting();
+        await recordingEngine.cancelActiveSession();
       } catch (e) {}
       setIsRecording(false);
       setIsPaused(false);
+      setSavedChunksCount(0);
     }
   };
 
@@ -644,6 +652,9 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                     </div>
                   )}
                 </div>
+
+                {/* Indicador Discreto de Wake Lock ("Tela ativa durante a gravação") + Orientação ao Usuário */}
+                <WakeLockStatusBadge isRecording={isRecording} savedChunksCount={savedChunksCount} />
               </div>
 
               {/* Botões de Ação da Gravação */}

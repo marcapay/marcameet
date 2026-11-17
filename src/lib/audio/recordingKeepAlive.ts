@@ -1,160 +1,240 @@
 /**
- * Utilitário para Manter Gravações Longas Ativas em Segundo Plano e Tela Apagada:
- * 1. Screen Wake Lock API (Impede que a tela do celular/computador apague ou entre em repouso)
- * 2. Silent Audio Keep-Alive + HTML Audio Loop (Mantém o Web Audio Engine ativo em segundo plano no iOS Safari e Android)
- * 3. MediaSession API (Registra reprodução ativa de mídia no sistema operacional)
+ * Gerenciador de Screen Wake Lock API para Gravação de Reuniões
+ * - Mantém a tela do celular (Android Chrome / iOS Safari 16.4+) ligada enquanto a gravação estiver ativa.
+ * - Monitora eventos 'release' e 'visibilitychange' para reativar automaticamente quando a página voltar a ficar visível.
+ * - Libera recursos imediatamente ao finalizar ou cancelar a gravação para evitar consumo desnecessário de bateria.
  */
+
+export type WakeLockStatus = "idle" | "active" | "released" | "unsupported" | "denied";
+
+export interface WakeLockStateInfo {
+  status: WakeLockStatus;
+  message: string | null;
+  isSupported: boolean;
+}
 
 let wakeLockSentinel: any = null;
-let keepAliveAudioCtx: AudioContext | null = null;
-let keepAliveOscillator: OscillatorNode | null = null;
-let silentAudioEl: HTMLAudioElement | null = null;
+let pendingRequestPromise: Promise<WakeLockStateInfo> | null = null;
+let shouldKeepWakeLock = false;
+let globalListenersInitialized = false;
 
-/**
- * Solicita a trava de tela (Screen Wake Lock) para evitar que o dispositivo hiberne
- */
-export async function requestScreenWakeLock(): Promise<boolean> {
-  if (typeof window === "undefined" || !("wakeLock" in navigator)) {
-    return false;
+let currentState: WakeLockStateInfo = {
+  status: "idle",
+  message: null,
+  isSupported: true,
+};
+
+const wakeLockListeners = new Set<(info: WakeLockStateInfo) => void>();
+
+function updateWakeLockState(next: WakeLockStateInfo) {
+  currentState = next;
+  wakeLockListeners.forEach((cb) => {
+    try {
+      cb(currentState);
+    } catch {}
+  });
+}
+
+export function getWakeLockState(): WakeLockStateInfo {
+  return currentState;
+}
+
+export function subscribeWakeLockState(callback: (info: WakeLockStateInfo) => void): () => void {
+  wakeLockListeners.add(callback);
+  callback(currentState);
+  return () => {
+    wakeLockListeners.delete(callback);
+  };
+}
+
+export function isScreenWakeLockSupported(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof navigator !== "undefined" &&
+    "wakeLock" in navigator &&
+    typeof (navigator as any).wakeLock?.request === "function"
+  );
+}
+
+function initWakeLockVisibilityListeners() {
+  if (globalListenersInitialized || typeof window === "undefined" || typeof document === "undefined") {
+    return;
   }
+  globalListenersInitialized = true;
 
-  try {
-    if (wakeLockSentinel && !wakeLockSentinel.released) {
-      return true;
+  const handleVisibilityOrFocus = () => {
+    if (
+      shouldKeepWakeLock &&
+      document.visibilityState === "visible" &&
+      (!wakeLockSentinel || wakeLockSentinel.released)
+    ) {
+      void requestScreenWakeLock();
     }
-    wakeLockSentinel = await (navigator as any).wakeLock.request("screen");
-    wakeLockSentinel.addEventListener("release", () => {
-      wakeLockSentinel = null;
-    });
-    return true;
-  } catch (err) {
-    console.warn("Screen Wake Lock não pôde ser ativado:", err);
-    return false;
-  }
+  };
+
+  document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+  window.addEventListener("focus", handleVisibilityOrFocus);
 }
 
 /**
- * Libera a trava de tela quando a gravação é encerrada ou cancelada
+ * Solicita o Screen Wake Lock ('screen') para manter a tela ligada durante a gravação.
+ * Nunca interrompe a gravação caso o navegador não suporte ou recuse a solicitação.
+ */
+export async function requestScreenWakeLock(): Promise<WakeLockStateInfo> {
+  if (typeof window === "undefined") {
+    return currentState;
+  }
+
+  initWakeLockVisibilityListeners();
+  shouldKeepWakeLock = true;
+
+  if (!isScreenWakeLockSupported()) {
+    const unsupportedInfo: WakeLockStateInfo = {
+      status: "unsupported",
+      message:
+        "Seu navegador não suporta manter a tela ativa automaticamente. Mantenha a página aberta e a tela ligada durante a gravação.",
+      isSupported: false,
+    };
+    updateWakeLockState(unsupportedInfo);
+    return unsupportedInfo;
+  }
+
+  // Evitar múltiplas requisições simultâneas ou vazamento de sentinels
+  if (wakeLockSentinel && !wakeLockSentinel.released) {
+    const activeInfo: WakeLockStateInfo = {
+      status: "active",
+      message: "Tela ativa durante a gravação",
+      isSupported: true,
+    };
+    updateWakeLockState(activeInfo);
+    return activeInfo;
+  }
+
+  if (pendingRequestPromise) {
+    return pendingRequestPromise;
+  }
+
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+    const waitingInfo: WakeLockStateInfo = {
+      status: "released",
+      message: "A página está em segundo plano. Volte para a página para manter a tela ativa e garantir a gravação.",
+      isSupported: true,
+    };
+    updateWakeLockState(waitingInfo);
+    return waitingInfo;
+  }
+
+  pendingRequestPromise = (async () => {
+    try {
+      const sentinel = await (navigator as any).wakeLock.request("screen");
+
+      // Se a gravação foi encerrada enquanto aguardava a promessa, libera imediatamente
+      if (!shouldKeepWakeLock) {
+        try {
+          await sentinel.release();
+        } catch {}
+        const idleInfo: WakeLockStateInfo = { status: "idle", message: null, isSupported: true };
+        updateWakeLockState(idleInfo);
+        return idleInfo;
+      }
+
+      wakeLockSentinel = sentinel;
+
+      sentinel.addEventListener(
+        "release",
+        () => {
+          if (wakeLockSentinel === sentinel) {
+            wakeLockSentinel = null;
+          }
+          if (shouldKeepWakeLock) {
+            updateWakeLockState({
+              status: "released",
+              message: "Proteção de tela pausada temporariamente. Mantenha a página visível.",
+              isSupported: true,
+            });
+            // Se a página ainda estiver visível (ex: liberação temporária do sistema), tentar reativar
+            if (typeof document !== "undefined" && document.visibilityState === "visible") {
+              setTimeout(() => {
+                if (shouldKeepWakeLock && (!wakeLockSentinel || wakeLockSentinel.released)) {
+                  void requestScreenWakeLock();
+                }
+              }, 400);
+            }
+          } else {
+            updateWakeLockState({ status: "idle", message: null, isSupported: true });
+          }
+        },
+        { once: true }
+      );
+
+      const activeInfo: WakeLockStateInfo = {
+        status: "active",
+        message: "Tela ativa durante a gravação",
+        isSupported: true,
+      };
+      updateWakeLockState(activeInfo);
+      return activeInfo;
+    } catch (err: any) {
+      console.warn("[WakeLock] Solicitação recusada ou indisponível:", err?.message || err);
+      const deniedInfo: WakeLockStateInfo = {
+        status: "denied",
+        message:
+          "Não foi possível manter a tela ligada automaticamente (economia de bateria ou restrição do aparelho). A gravação continua normalmente — mantenha a página aberta e a tela ativa.",
+        isSupported: true,
+      };
+      updateWakeLockState(deniedInfo);
+      return deniedInfo;
+    } finally {
+      pendingRequestPromise = null;
+    }
+  })();
+
+  return pendingRequestPromise;
+}
+
+/**
+ * Libera o Screen Wake Lock quando a gravação é finalizada ou cancelada.
  */
 export async function releaseScreenWakeLock(): Promise<void> {
+  shouldKeepWakeLock = false;
+  pendingRequestPromise = null;
+
   if (wakeLockSentinel) {
+    const sentinelToRelease = wakeLockSentinel;
+    wakeLockSentinel = null;
     try {
-      await wakeLockSentinel.release();
-    } catch (e) {
+      if (!sentinelToRelease.released) {
+        await sentinelToRelease.release();
+      }
+    } catch {
       // Ignorar erros na liberação
     }
-    wakeLockSentinel = null;
   }
+
+  updateWakeLockState({
+    status: "idle",
+    message: null,
+    isSupported: isScreenWakeLockSupported(),
+  });
 }
 
 /**
- * Inicia um loop de áudio silencioso via HTMLAudioElement e MediaSession API
- * Essencial para iOS Safari e Android Chrome continuarem rodando quando a tela é bloqueada
- */
-export function startSilentAudioLoop(): void {
-  if (typeof window === "undefined") return;
-  try {
-    if (!silentAudioEl) {
-      silentAudioEl = new Audio("data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=");
-      silentAudioEl.loop = true;
-      silentAudioEl.volume = 0.01;
-    }
-    silentAudioEl.play().catch(() => {});
-
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: "Marca Meet",
-        artist: "Modo Segundo Plano & Tela Apagada Ativo",
-        album: "Inteligência de Reuniões",
-      });
-    }
-  } catch (e) {
-    console.warn("Erro ao iniciar loop de áudio silencioso:", e);
-  }
-}
-
-/**
- * Inicia um oscilador silencioso no AudioContext para evitar que navegadores mobile
- * suspendam a execução do script em segundo plano durante gravações longas.
+ * Funções mantidas por compatibilidade de importação sem gerar consumo desnecessário de bateria
  */
 export function startAudioKeepAlive(): void {
-  if (typeof window === "undefined") return;
-
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-
-    if (!keepAliveAudioCtx || keepAliveAudioCtx.state === "closed") {
-      keepAliveAudioCtx = new AudioCtx();
-    }
-
-    if (keepAliveAudioCtx.state === "suspended") {
-      keepAliveAudioCtx.resume();
-    }
-
-    if (!keepAliveOscillator) {
-      const osc = keepAliveAudioCtx.createOscillator();
-      const gain = keepAliveAudioCtx.createGain();
-
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(440, keepAliveAudioCtx.currentTime);
-      gain.gain.setValueAtTime(0.0001, keepAliveAudioCtx.currentTime); // Silencioso
-
-      osc.connect(gain);
-      gain.connect(keepAliveAudioCtx.destination);
-      osc.start();
-
-      keepAliveOscillator = osc;
-    }
-
-    startSilentAudioLoop();
-  } catch (err) {
-    console.warn("Não foi possível iniciar Audio Keep-Alive:", err);
-  }
+  // Desativado loop de oscilador/áudio desnecessário para economizar bateria (Requisito 8)
 }
 
-/**
- * Encerra o oscilador silencioso e o áudio de fundo
- */
 export function stopAudioKeepAlive(): void {
-  try {
-    if (keepAliveOscillator) {
-      keepAliveOscillator.stop();
-      keepAliveOscillator.disconnect();
-      keepAliveOscillator = null;
-    }
-    if (keepAliveAudioCtx && keepAliveAudioCtx.state !== "closed") {
-      keepAliveAudioCtx.close();
-      keepAliveAudioCtx = null;
-    }
-    if (silentAudioEl) {
-      silentAudioEl.pause();
-    }
-  } catch (err) {
-    console.warn("Erro ao finalizar Audio Keep-Alive:", err);
-  }
+  // Nada a limpar
 }
 
-/**
- * Ativa o modo de segundo plano completo (Wake Lock + Audio Keep Alive + MediaSession)
- */
 export async function enableBackgroundMode(): Promise<boolean> {
   if (typeof window === "undefined") return false;
-  try {
-    localStorage.setItem("marcameet_bg_mode", "enabled");
-    await requestScreenWakeLock();
-    startAudioKeepAlive();
-    startSilentAudioLoop();
-    return true;
-  } catch (e) {
-    console.warn("Erro ao ativar modo segundo plano:", e);
-    return false;
-  }
+  localStorage.setItem("marcameet_bg_mode", "enabled");
+  return true;
 }
 
-/**
- * Verifica se o modo segundo plano está ativado
- */
 export function isBackgroundModeEnabled(): boolean {
   if (typeof window === "undefined") return false;
   return localStorage.getItem("marcameet_bg_mode") === "enabled";

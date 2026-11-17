@@ -25,6 +25,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import { getCurrentAccount } from "@/lib/auth/accountSystem";
+import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import {
   requestScreenWakeLock,
   releaseScreenWakeLock,
@@ -217,14 +218,20 @@ class RecordingEngineService {
         }
 
         if (session && session.status !== "finished") {
-          console.log("🔄 [RecordingEngine] Reunião ativa detectada:", session.meeting_id);
+          console.log("🔄 [RecordingEngine] Reunião interrompida/ativa detectada:", session.meeting_id);
           this.activeSession = session;
 
           if (!this.mediaRecorder || this.mediaRecorder.state === "inactive") {
-            if (session.status === "recording") {
-              session.status = "background";
+            session.status = "interrupted";
+            session.source_status = "interrupted";
+            session.recorder_status = "paused";
+            if (!session.paused_at_ms) {
+              session.paused_at_ms = Date.now();
             }
           }
+
+          // Drenar eventuais chunks pendentes salvos no IndexedDB antes da interrupção
+          this.triggerUploadQueue();
 
           this.startTimerLoop();
           this.startSyncHeartbeat();
@@ -287,46 +294,60 @@ class RecordingEngineService {
       } catch (e) {}
     }
 
-    const sessionId = `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const sessionId = this.activeSession?.meeting_id === meetingId
+      ? this.activeSession.session_id
+      : `sess_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const nowIso = new Date().toISOString();
     const currentAccount = getCurrentAccount();
+    const isResumingInterrupted = this.activeSession?.meeting_id === meetingId;
+
+    const existingPausedMs = isResumingInterrupted
+      ? (this.activeSession!.accumulated_paused_ms || 0) +
+        (this.activeSession!.paused_at_ms ? Math.max(0, Date.now() - this.activeSession!.paused_at_ms) : 0)
+      : 0;
 
     const sessionState: ActiveMeetingSessionState = {
       meeting_id: meetingId,
       session_id: sessionId,
-      user_id: currentAccount?.id || "u-001",
-      title: title || "Reunião Sem Título",
+      user_id: currentAccount?.id || this.activeSession?.user_id || "u-001",
+      title: title || this.activeSession?.title || "Reunião Sem Título",
       source_type: sourceType,
       status: "recording",
-      started_at: nowIso,
-      started_at_ms: Date.now(),
+      started_at: isResumingInterrupted ? this.activeSession!.started_at : nowIso,
+      started_at_ms: isResumingInterrupted ? this.activeSession!.started_at_ms : Date.now(),
       last_chunk_at: nowIso,
       last_activity_at: nowIso,
       source_status: "active",
       recorder_status: "recording",
-      accumulated_paused_ms: 0,
+      accumulated_paused_ms: existingPausedMs,
+      paused_at_ms: undefined,
+      auto_paused_reason: null,
       wake_lock_enabled: wakeLockEnabled,
-      transcript_draft: "",
-      speaker_map: { "Participante 1": "Participante 1" },
-      segments_draft: [],
+      transcript_draft: isResumingInterrupted ? this.activeSession!.transcript_draft || "" : "",
+      speaker_map: isResumingInterrupted
+        ? this.activeSession!.speaker_map || { "Participante 1": "Participante 1" }
+        : { "Participante 1": "Participante 1" },
+      segments_draft: isResumingInterrupted ? this.activeSession!.segments_draft || [] : [],
     };
 
-    // Criar registro inicial da reunião e transcrição no Supabase vinculado à conta da pessoa
+    // Criar/atualizar registro inicial da reunião e transcrição no Supabase vinculado à conta da pessoa
     saveLiveTranscriptToSupabase({
       meetingId,
       userId: currentAccount?.id,
       userEmail: currentAccount?.email,
       title: sessionState.title,
       sourceType,
-      durationSeconds: 0,
-      rawText: "Gravação iniciada...",
+      durationSeconds: this.getElapsedSeconds(),
+      rawText: sessionState.transcript_draft || "Gravação iniciada...",
       speakerMap: sessionState.speaker_map,
-      segments: [],
+      segments: sessionState.segments_draft,
     }).catch(() => {});
 
     this.activeSession = sessionState;
     this.mediaStream = stream;
-    this.sequenceNumber = 0;
+    if (!isResumingInterrupted) {
+      this.sequenceNumber = 0;
+    }
     this.wakeLockEnabled = wakeLockEnabled;
 
     if (wakeLockEnabled) {
@@ -451,13 +472,52 @@ class RecordingEngineService {
     saveActiveSessionToIndexedDB(this.activeSession);
 
     const acc = getCurrentAccount();
+    const durationNow = this.getElapsedSeconds();
+
+    // Salvar checkpoint periódico local (IndexedDB + LocalStorage) para recuperação automática em caso de queda
+    saveLocalMeeting({
+      meeting: {
+        id: this.activeSession.meeting_id,
+        user_id: acc?.id || this.activeSession.user_id || "u-001",
+        user_email: acc?.email,
+        title: this.activeSession.title,
+        description: "Gravação em andamento (salvamento periódico automático).",
+        meeting_date: this.activeSession.started_at,
+        duration_seconds: durationNow,
+        source_type: this.activeSession.source_type,
+        status: "TRANSCREVENDO",
+        error_message: null,
+        tags: ["Salvamento Automático"],
+        created_at: this.activeSession.started_at,
+        updated_at: new Date().toISOString(),
+      },
+      transcript: {
+        id: `t-${this.activeSession.meeting_id}`,
+        meeting_id: this.activeSession.meeting_id,
+        raw_text: updatedDraft,
+        speaker_map: this.activeSession.speaker_map || { "Participante 1": "Participante 1" },
+        segments: this.activeSession.segments_draft || [],
+      },
+      highlights: [],
+      decisions: [],
+      tasks: [],
+      pending_items: [],
+      risks: [],
+      opportunities: [],
+      values: [],
+      dates: [],
+      quotes: [],
+      next_steps_agreed: [],
+      next_steps_ai_suggestions: [],
+    });
+
     saveLiveTranscriptToSupabase({
       meetingId: this.activeSession.meeting_id,
       userId: acc?.id || this.activeSession.user_id,
       userEmail: acc?.email,
       title: this.activeSession.title,
       sourceType: this.activeSession.source_type,
-      durationSeconds: this.getElapsedSeconds(),
+      durationSeconds: durationNow,
       rawText: updatedDraft,
       speakerMap: this.activeSession.speaker_map,
       segments: this.activeSession.segments_draft,
@@ -732,9 +792,13 @@ class RecordingEngineService {
     if (this.syncInterval) clearInterval(this.syncInterval);
     if (this.memoryMonitorInterval) clearInterval(this.memoryMonitorInterval);
 
-    releaseScreenWakeLock();
+    await releaseScreenWakeLock();
     stopAudioKeepAlive();
     this.revokeAllObjectURLs();
+  }
+
+  public getSavedChunksCount(): number {
+    return this.sequenceNumber;
   }
 
   /**

@@ -27,6 +27,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
+import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
@@ -755,6 +756,11 @@ export default function OnlineMeetingPage() {
               </div>
 
               <h2 className="text-2xl font-black text-white pt-1">{meetingTitle}</h2>
+              {step === "recording" && (
+                <div className="pt-2">
+                  <WakeLockStatusBadge isRecording={step === "recording"} />
+                </div>
+              )}
             </div>
 
             {/* Botões de Ação na Reunião */}

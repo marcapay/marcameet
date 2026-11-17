@@ -22,6 +22,7 @@ import {
   Smartphone
 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
+import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails, ActiveMeetingEngineStatus } from "@/types/database";
@@ -44,6 +45,7 @@ export default function RecordPage() {
   const [isPaused, setIsPaused] = useState(false);
   const [engineStatus, setEngineStatus] = useState<ActiveMeetingEngineStatus>("idle");
   const [sourceEnded, setSourceEnded] = useState(false);
+  const [savedChunksCount, setSavedChunksCount] = useState(0);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
 
   // Modais de Confirmação
@@ -62,12 +64,17 @@ export default function RecordPage() {
         if (session) {
           setIsRecording(status === "recording" || status === "background" || status === "interrupted" || status === "reconnecting");
           setIsPaused(session.recorder_status === "paused");
-          setSourceEnded(session.source_status === "ended");
+          setSourceEnded(session.source_status === "ended" || session.source_status === "interrupted" || status === "interrupted");
+          if (session.title) setTitle(session.title);
         } else {
           setIsRecording(false);
           setIsPaused(false);
           setSourceEnded(false);
+          setSavedChunksCount(0);
         }
+      },
+      onChunkCaptured: (_, seq) => {
+        setSavedChunksCount(seq);
       },
       onSourceInterrupted: (reason) => {
         console.warn("Entrada de áudio interrompida:", reason);
@@ -75,12 +82,23 @@ export default function RecordPage() {
       },
     });
 
-    // Se já houver sessão ativa rodando com MediaRecorder vivo
+    // Se já houver sessão ativa ou interrompida para recuperar
     const currentSession = recordingEngine.getActiveSession();
-    if (currentSession && currentSession.source_type !== "online_meeting" && recordingEngine.hasLiveRecorder()) {
+    if (currentSession && currentSession.source_type !== "online_meeting") {
       setIsRecording(true);
       setIsPaused(currentSession.recorder_status === "paused");
+      setSourceEnded(!recordingEngine.hasLiveRecorder() || currentSession.status === "interrupted");
+      setSavedChunksCount(recordingEngine.getSavedChunksCount());
       if (currentSession.title) setTitle(currentSession.title);
+    } else {
+      recordingEngine.restoreActiveSessionOnLoad().then((restored) => {
+        if (restored && restored.source_type !== "online_meeting" && restored.status !== "finished") {
+          setIsRecording(true);
+          setIsPaused(true);
+          setSourceEnded(true);
+          if (restored.title) setTitle(restored.title);
+        }
+      });
     }
 
     return () => {
@@ -473,7 +491,7 @@ export default function RecordPage() {
                 INICIAR GRAVAÇÃO
               </button>
               <p className="text-[11px] text-slate-400">
-                Toque no botão para iniciar a gravação presencial. A gravação continuará ativa mesmo se você trocar de aba ou apagar a tela do celular.
+                Toque no botão para iniciar a gravação presencial. A tela permanecerá ativa automaticamente enquanto esta página estiver aberta e visível.
               </p>
             </div>
           </div>
@@ -558,11 +576,14 @@ export default function RecordPage() {
               ) : (
                 <span className="inline-block px-3 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-semibold flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                  GRAVANDO EM SEGUNDO PLANO
+                  GRAVAÇÃO ATIVA
                 </span>
               )}
             </div>
           </div>
+
+          {/* Indicador Discreto de Wake Lock ("Tela ativa durante a gravação") + Orientação ao Usuário */}
+          <WakeLockStatusBadge isRecording={isRecording} savedChunksCount={savedChunksCount} />
 
           {/* Equalizador Visual de Gravação */}
           {!isPaused && (
