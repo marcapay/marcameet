@@ -114,12 +114,35 @@ function saveToLocalAccountsRegistry(account: UserAccount) {
   try {
     const registry = getLocalAccountsRegistry();
     const cleanEmail = account.email.trim().toLowerCase();
-    registry[cleanEmail] = {
+    const existing = registry[cleanEmail];
+    const autoDefaultName = cleanEmail
+      .split("@")[0]
+      .replace(/[._-]+/g, " ")
+      .replace(/\b\w/g, (l) => l.toUpperCase());
+
+    const bestName =
+      existing?.name && existing.name !== autoDefaultName && account.name === autoDefaultName
+        ? existing.name
+        : account.name || existing?.name || cleanEmail.split("@")[0];
+
+    const merged: UserAccount = {
+      ...(existing || {}),
       ...account,
+      name: bestName,
       id: generateDeterministicUserId(cleanEmail),
       email: cleanEmail,
     };
+
+    registry[cleanEmail] = merged;
     localStorage.setItem(STORAGE_KEY_ACCOUNTS_LIST, JSON.stringify(registry));
+
+    if (currentAccountCache && currentAccountCache.email.trim().toLowerCase() === cleanEmail) {
+      if (currentAccountCache.name !== merged.name) {
+        currentAccountCache = merged;
+        setStoredKey(STORAGE_KEY_ACTIVE_ACCOUNT, JSON.stringify(merged));
+        notifyAccountListeners(merged);
+      }
+    }
   } catch (e) {}
   saveUserAccountToIndexedDB(account).catch(() => {});
 }

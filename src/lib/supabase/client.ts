@@ -402,50 +402,47 @@ export async function saveMeetingToSupabase(details: CompleteMeetingDetails): Pr
         ? ensureValidUuid(`marcameet_user:${meeting.user_email.trim().toLowerCase()}`)
         : null;
 
-    // 1. Tentar upsert com colunas estendidas (details_json / user_email) caso existam
-    const { error: fullErr } = await client.from('marcameet').upsert({
+    const normalizedDetails: CompleteMeetingDetails = {
+      ...details,
+      meeting: {
+        ...meeting,
+        id: meetingUuid,
+        user_id: userUuid || meeting.user_id || 'u-001',
+      },
+    };
+
+    const packedJsonPayload = `__MM_JSON__:${JSON.stringify(normalizedDetails)}`;
+
+    // 1. Upsert direto com as colunas universais da tabela marcameet (guardando o JSON integral em error_message para zero perda)
+    const { error: mErr } = await client.from('marcameet').upsert({
       id: meetingUuid,
       user_id: userUuid,
-      user_email: meeting.user_email || null,
       title: meeting.title,
       description: meeting.description || null,
       meeting_date: meeting.meeting_date,
-      duration_seconds: meeting.duration_seconds || 0,
-      source_type: meeting.source_type,
-      status: meeting.status,
-      tags: meeting.tags || [],
-      details_json: details,
+      duration_seconds: Math.round(Number(meeting.duration_seconds || 0)),
+      source_type: ['recording', 'audio_upload', 'video_upload', 'pasted_text'].includes(meeting.source_type)
+        ? meeting.source_type
+        : 'recording',
+      status: meeting.status || 'CONCLUIDA',
+      error_message: packedJsonPayload,
+      tags: Array.isArray(meeting.tags) ? meeting.tags : [],
       updated_at: new Date().toISOString(),
     });
 
-    if (fullErr) {
-      // 2. Upsert compatível com o schema padrão (UUIDs estritos em id e user_id)
-      const { error: mErr } = await client.from('marcameet').upsert({
+    if (mErr) {
+      await client.from('meetings').upsert({
         id: meetingUuid,
         user_id: userUuid,
         title: meeting.title,
         description: meeting.description || null,
         meeting_date: meeting.meeting_date,
-        duration_seconds: meeting.duration_seconds || 0,
-        source_type: meeting.source_type,
-        status: meeting.status,
-        tags: meeting.tags || [],
-        updated_at: new Date().toISOString(),
+        duration_seconds: Math.round(Number(meeting.duration_seconds || 0)),
+        source_type: 'recording',
+        status: 'CONCLUIDA',
+        error_message: packedJsonPayload,
+        tags: Array.isArray(meeting.tags) ? meeting.tags : [],
       });
-
-      if (mErr) {
-        await client.from('meetings').upsert({
-          id: meetingUuid,
-          user_id: userUuid,
-          title: meeting.title,
-          description: meeting.description || null,
-          meeting_date: meeting.meeting_date,
-          duration_seconds: meeting.duration_seconds || 0,
-          source_type: meeting.source_type,
-          status: meeting.status,
-          tags: meeting.tags || [],
-        });
-      }
     }
 
     // 3. Salvar SEMPRE a Transcrição na tabela transcripts e os segmentos em transcript_segments
@@ -628,6 +625,17 @@ export async function fetchMeetingsFromSupabase(userId?: string, userEmail?: str
         continue;
       }
 
+      if (typeof row.error_message === 'string' && row.error_message.startsWith('__MM_JSON__:')) {
+        try {
+          const parsed = JSON.parse(row.error_message.slice('__MM_JSON__:'.length)) as CompleteMeetingDetails;
+          if (parsed && parsed.meeting && parsed.meeting.title) {
+            parsed.meeting.error_message = null;
+            reconstructed.push(parsed);
+            continue;
+          }
+        } catch {}
+      }
+
       const tRow = transcriptsMap.get(row.id);
       const segRows = segmentsMap.get(row.id) || [];
       const sRow = summariesMap.get(row.id);
@@ -715,10 +723,12 @@ export async function fetchMeetingsFromSupabase(userId?: string, userEmail?: str
       return reconstructed.filter((item) => {
         const mUserId = item.meeting.user_id;
         const mEmail = item.meeting.user_email?.trim().toLowerCase();
-        const isUnowned = !mUserId || mUserId === 'u-001' || mUserId === 'anonymous';
+        // Se a reunião não tiver e-mail de outra conta diferente, pertence à conta do usuário no banco
+        if (!mEmail || (normalizedEmail && mEmail === normalizedEmail)) {
+          return true;
+        }
         const matchesId = expectedUserUuid && (mUserId === expectedUserUuid || ensureValidUuid(mUserId) === expectedUserUuid);
-        const matchesEmail = normalizedEmail && mEmail === normalizedEmail;
-        return matchesId || matchesEmail || isUnowned;
+        return Boolean(matchesId);
       });
     }
 
