@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Video, Mic, FileText, Settings } from "lucide-react";
+import { Home, Video, Mic, FileText, UserCheck } from "lucide-react";
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -12,7 +12,7 @@ export function Sidebar() {
     { label: "Reuniões", href: "/meetings", icon: Video },
     { label: "Gravar", href: "/record", icon: Mic, highlight: true },
     { label: "Resumos", href: "/tasks", icon: FileText },
-    { label: "Configurações", href: "/settings", icon: Settings },
+    { label: "Minha Conta", href: "/account", icon: UserCheck },
   ];
 
   return (

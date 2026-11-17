@@ -35,12 +35,12 @@ export function AccountProtectionBanner() {
             <ShieldCheck className="w-4 h-4 text-indigo-300" />
           </div>
           <span>
-            <strong>Proteja suas reuniões:</strong> Crie sua conta gratuita ou faça login na aba Configurações para que todas as gravações e atas fiquem salvas na sua conta e nunca se percam.
+            <strong>Proteja suas reuniões:</strong> Crie sua conta gratuita ou faça login em Minha Conta para que todas as gravações e atas fiquem salvas na sua conta e nunca se percam.
           </span>
         </div>
 
         <Link
-          href="/settings"
+          href="/account"
           className="inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow-md shadow-indigo-600/25 transition-all shrink-0 self-start sm:self-auto"
         >
           <UserPlus className="w-3.5 h-3.5" />

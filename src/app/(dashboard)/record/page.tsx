@@ -448,7 +448,7 @@ export default function RecordPage() {
           </div>
 
           <Link
-            href="/settings"
+            href="/account"
             className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all shrink-0 flex items-center gap-1.5"
           >
             <KeyRound className="w-4 h-4" />

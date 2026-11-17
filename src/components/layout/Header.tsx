@@ -26,7 +26,6 @@ export function Header() {
     { label: "Gravar Reunião", href: "/record", icon: Mic },
     { label: "Resumos & Atas", href: "/tasks", icon: FileText },
     { label: "Minha Conta", href: "/account", icon: UserCheck },
-    { label: "Configurações", href: "/settings", icon: Settings },
   ];
 
   const getInitials = (name: string) =>

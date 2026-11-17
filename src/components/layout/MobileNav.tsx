@@ -11,8 +11,8 @@ export function MobileNav() {
     { label: "Início", href: "/", icon: Home },
     { label: "Reuniões", href: "/meetings", icon: Video },
     { label: "GRAVAR", href: "/record", icon: Mic, isCenter: true },
+    { label: "Resumos", href: "/tasks", icon: FileText },
     { label: "Conta", href: "/account", icon: UserCheck },
-    { label: "Ajustes", href: "/settings", icon: Settings },
   ];
 
   return (
