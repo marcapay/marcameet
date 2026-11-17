@@ -264,7 +264,12 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
           </div>
 
           {/* Player Integrado */}
-          <MediaPlayer seekToTime={seekTime} />
+          <MediaPlayer
+            meetingId={selectedMeeting.meeting.id}
+            fallbackDuration={selectedMeeting.meeting.duration_seconds}
+            transcriptText={selectedMeeting.transcript?.raw_text}
+            seekToTime={seekTime}
+          />
 
           {/* Card 1: Resumo Executivo Gerado por IA */}
           <div className="p-6 rounded-3xl glass-card border border-indigo-500/20 space-y-3">

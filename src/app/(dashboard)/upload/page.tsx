@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Upload, FileAudio, FileVideo, CheckCircle2, Sparkles, AlertCircle, ArrowRight } from "lucide-react";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
+import { saveMeetingAudioBlob } from "@/lib/recording/chunkStore";
 import { processAudioTranscription, processAIAnalysis } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
 import { generateUuid } from "@/lib/auth/accountSystem";
@@ -71,6 +72,7 @@ export default function UploadPage() {
     };
 
     saveLocalMeeting(initialDetails);
+    await saveMeetingAudioBlob(newMeetingId, selectedFile, selectedFile.type);
 
     try {
       setUploadProgress(40);
@@ -201,6 +203,7 @@ export default function UploadPage() {
       initialDetails.meeting.status = "ERRO";
       initialDetails.meeting.error_message = "Falha no envio ou transcrição do arquivo.";
       saveLocalMeeting(initialDetails);
+    await saveMeetingAudioBlob(newMeetingId, selectedFile, selectedFile.type);
       router.push(`/meetings/${newMeetingId}`);
     }
   };

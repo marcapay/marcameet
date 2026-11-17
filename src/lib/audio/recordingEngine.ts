@@ -12,11 +12,18 @@ import {
   saveChunk,
   clearSessionChunks,
   countChunks,
+  getAllSessionChunksOrdered,
+  saveMeetingAudioBlob,
 } from "@/lib/recording/chunkStore";
 import {
   processUploadQueue,
   destroyUploader,
 } from "@/lib/recording/chunkUploader";
+import {
+  processAudioTranscription,
+  refineTranscriptionAccuracy,
+  hasConfiguredApiKey,
+} from "@/lib/ai";
 import {
   syncActiveMeetingToSupabase,
   fetchActiveMeetingFromSupabase,
@@ -373,10 +380,10 @@ class RecordingEngineService {
       };
     });
 
-    // Configurar MediaRecorder de 64 kbps Opus/WebM seguro
+    // Configurar MediaRecorder de 128 kbps Opus/WebM de alta definição vocal
     const mimeType = getSupportedMimeType();
     const recorderOptions: MediaRecorderOptions = {
-      audioBitsPerSecond: 64000,
+      audioBitsPerSecond: 128000,
     };
     if (mimeType) {
       recorderOptions.mimeType = mimeType;
@@ -837,11 +844,77 @@ class RecordingEngineService {
 
     destroyUploader();
 
-    const finalTranscript = this.activeSession.transcript_draft || "";
-    const finalSpeakerMap = this.activeSession.speaker_map || { "Participante 1": "Participante 1" };
-    const finalSegments = this.activeSession.segments_draft || [];
+    let finalTranscript = this.activeSession.transcript_draft || "";
+    let finalSpeakerMap = this.activeSession.speaker_map || { "Participante 1": "Participante 1" };
+    let finalSegments = this.activeSession.segments_draft || [];
 
-    // 3. Marcar reunião como finalizada e limpar fila do IndexedDB
+    // 3. Consolidar TODOS os chunks em um único arquivo de áudio contínuo e salvar no IndexedDB para reprodução no MediaPlayer!
+    try {
+      const orderedChunks = await getAllSessionChunksOrdered(finalMeetingId);
+      if (orderedChunks.length > 0) {
+        const fullMimeType = orderedChunks[0].mimeType || "audio/webm";
+        const fullAudioBlob = new Blob(
+          orderedChunks.map((c) => c.blob),
+          { type: fullMimeType }
+        );
+
+        // Salvar áudio completo da reunião para tocar no MediaPlayer
+        await saveMeetingAudioBlob(finalMeetingId, fullAudioBlob, fullMimeType);
+
+        // 4. Transcrever o áudio contínuo completo (sem cortes de 5s no meio das frases) + Correção Fonética Contextual por IA
+        if (hasConfiguredApiKey() && fullAudioBlob.size > 500 && fullAudioBlob.size < 24 * 1024 * 1024) {
+          try {
+            const ext = fullMimeType.includes("mp4") ? "mp4" : fullMimeType.includes("ogg") ? "ogg" : "webm";
+            const fullTranscribed = await processAudioTranscription(
+              fullAudioBlob,
+              `reuniao_completa_${finalMeetingId}.${ext}`,
+              { refineWithAI: true }
+            );
+            if (fullTranscribed && fullTranscribed.raw_text && fullTranscribed.raw_text.trim().length > 0) {
+              finalTranscript = fullTranscribed.raw_text.trim();
+              finalSpeakerMap = fullTranscribed.speaker_map || finalSpeakerMap;
+              finalSegments = (fullTranscribed.segments || []).map((s: any, idx: number) => ({
+                id: `seg-${finalMeetingId}-${idx}`,
+                transcript_id: `t-${finalMeetingId}`,
+                meeting_id: finalMeetingId,
+                start_time: Number(s.start_time || 0),
+                end_time: Number(s.end_time || 5),
+                speaker: s.speaker || "Participante 1",
+                text: s.text || "",
+              }));
+            }
+          } catch (fullErr) {
+            console.warn("Aviso ao transcrever áudio contínuo completo, mantendo transcrição progressiva:", fullErr);
+          }
+        } else if (finalTranscript.trim().length > 0 && hasConfiguredApiKey()) {
+          // Refinar a transcrição progressiva caso o arquivo passe de 24MB
+          const refined = await refineTranscriptionAccuracy({
+            raw_text: finalTranscript,
+            segments: finalSegments.map((s) => ({
+              start_time: s.start_time,
+              end_time: s.end_time,
+              speaker: s.speaker,
+              text: s.text,
+            })),
+            speaker_map: finalSpeakerMap,
+          });
+          finalTranscript = refined.raw_text;
+          finalSegments = refined.segments.map((s, idx) => ({
+            id: `seg-${finalMeetingId}-${idx}`,
+            transcript_id: `t-${finalMeetingId}`,
+            meeting_id: finalMeetingId,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            speaker: s.speaker,
+            text: s.text,
+          }));
+        }
+      }
+    } catch (audioErr) {
+      console.warn("Aviso ao consolidar áudio completo da reunião:", audioErr);
+    }
+
+    // 5. Marcar reunião como finalizada e limpar fila temporária de chunks
     this.activeSession.status = "finished";
     this.activeSession.ended_at = new Date().toISOString();
 

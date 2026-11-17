@@ -172,7 +172,14 @@ export function MobileApp() {
   // Iniciar Gravação com Engine Central
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+        },
+      });
       const meetingId = generateUuid();
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
@@ -863,7 +870,12 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               </div>
 
               {/* Player Integrado */}
-              <MediaPlayer seekToTime={seekTime} />
+              <MediaPlayer
+                meetingId={selectedMeeting.meeting.id}
+                fallbackDuration={selectedMeeting.meeting.duration_seconds}
+                transcriptText={selectedMeeting.transcript?.raw_text}
+                seekToTime={seekTime}
+              />
 
               {/* Card 1: Resumo Executivo */}
               <div className="p-4 sm:p-6 rounded-3xl glass-card border border-indigo-500/20 space-y-3 w-full max-w-full overflow-hidden">

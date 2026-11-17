@@ -19,17 +19,177 @@ export function hasConfiguredApiKey(): boolean {
   return Boolean(openaiKey || geminiKey || groqKey);
 }
 
-export async function processAudioTranscription(file: File | Blob, filename: string): Promise<TranscriptionResponse> {
+const WHISPER_PT_PROMPT =
+  "Transcrição fiel, clara e gramaticalmente correta em português do Brasil de uma reunião ou conversa. Vocabulário comum: reunião, gravação, áudio, tela ativa, trocar de aba, segundo plano, orçamento, projeto, cliente, alinhamento, decisão, tarefa, prazo.";
+
+/**
+ * Refina foneticamente e contextualmente os trechos transcritos (corrigindo palavras trocadas por homofonia, ex: 'água' -> 'aba')
+ * sem alterar timestamps nem inventar informações.
+ */
+export async function refineTranscriptionAccuracy(
+  raw: TranscriptionResponse
+): Promise<TranscriptionResponse> {
+  if (!raw || !raw.raw_text || raw.raw_text.trim().length < 8) {
+    return raw;
+  }
+
+  const { openaiKey, geminiKey, groqKey } = getActiveApiKeys();
+  const systemInstruction = `Você é um revisor especialista em transcrições de áudio em Português do Brasil.
+Sua única tarefa é corrigir erros fonéticos de reconhecimento de voz (palavras trocadas por som parecido fora de contexto, como "trocar a água" quando o contexto de tela/navegador indica "trocar a aba", erros de concordância verbal por corte de sílaba como "grava conversa" -> "gravar conversas") e pontuação.
+REGRAS ESTRITAS:
+1. Mantenha EXATAMENTE a mesma quantidade de elementos no array "segments", com os mesmos "start_time", "end_time" e "speaker".
+2. NÃO resuma, NÃO omita frases e NÃO invente fatos. Apenas corrija palavras foneticamente distorcidas pelo microfone para a palavra real que faz sentido na frase.
+3. Retorne APENAS um JSON válido no formato:
+{
+  "raw_text": "texto completo corrigido",
+  "segments": [
+    { "start_time": 0, "end_time": 5, "speaker": "Participante 1", "text": "frase corrigida" }
+  ]
+}`;
+
+  const userPayload = JSON.stringify({
+    raw_text: raw.raw_text,
+    segments: raw.segments,
+  });
+
+  try {
+    if (openaiKey) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemInstruction },
+            { role: "user", content: userPayload },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) {
+          const parsed = JSON.parse(content);
+          if (parsed.raw_text && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+            return {
+              raw_text: parsed.raw_text.trim(),
+              segments: parsed.segments.map((s: any, idx: number) => ({
+                start_time: s.start_time ?? raw.segments[idx]?.start_time ?? 0,
+                end_time: s.end_time ?? raw.segments[idx]?.end_time ?? 5,
+                speaker: s.speaker || raw.segments[idx]?.speaker || "Participante 1",
+                text: (s.text || raw.segments[idx]?.text || "").trim(),
+              })),
+              speaker_map: raw.speaker_map,
+            };
+          }
+        }
+      }
+    } else if (groqKey) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 7000);
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model: "llama-3.3-70b-versatile",
+          temperature: 0.1,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: systemInstruction },
+            { role: "user", content: userPayload },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (content) {
+          const parsed = JSON.parse(content);
+          if (parsed.raw_text && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+            return {
+              raw_text: parsed.raw_text.trim(),
+              segments: parsed.segments.map((s: any, idx: number) => ({
+                start_time: s.start_time ?? raw.segments[idx]?.start_time ?? 0,
+                end_time: s.end_time ?? raw.segments[idx]?.end_time ?? 5,
+                speaker: s.speaker || raw.segments[idx]?.speaker || "Participante 1",
+                text: (s.text || raw.segments[idx]?.text || "").trim(),
+              })),
+              speaker_map: raw.speaker_map,
+            };
+          }
+        }
+      }
+    } else if (geminiKey) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `${systemInstruction}\n\nDados:\n${userPayload}` }] }],
+            generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
+          }),
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          const parsed = JSON.parse(text);
+          if (parsed.raw_text && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+            return {
+              raw_text: parsed.raw_text.trim(),
+              segments: parsed.segments.map((s: any, idx: number) => ({
+                start_time: s.start_time ?? raw.segments[idx]?.start_time ?? 0,
+                end_time: s.end_time ?? raw.segments[idx]?.end_time ?? 5,
+                speaker: s.speaker || raw.segments[idx]?.speaker || "Participante 1",
+                text: (s.text || raw.segments[idx]?.text || "").trim(),
+              })),
+              speaker_map: raw.speaker_map,
+            };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Aviso no refinamento contextual da transcrição:", e);
+  }
+
+  return raw;
+}
+
+export async function processAudioTranscription(
+  file: File | Blob,
+  filename: string,
+  options?: { refineWithAI?: boolean }
+): Promise<TranscriptionResponse> {
   const { openaiKey, groqKey, geminiKey } = getActiveApiKeys();
+  const shouldRefine = options?.refineWithAI ?? (!filename.startsWith("chunk_"));
 
   // Exigência estrita: O sistema exige API key para funcionar
   if (!openaiKey && !groqKey && !geminiKey) {
     throw new Error(
-      "Nenhuma Chave de API configurada! O sistema exige obrigatoriamente uma API Key (OpenAI, Gemini ou Groq) para funcionar. Por favor, acesse a aba Configurações (Ajustes) e cadastre sua chave."
+      "Nenhuma Chave de API configurada! O sistema exige obrigatoriamente uma API Key (OpenAI, Gemini ou Groq) para funcionar. Por favor, acesse Minha Conta e cadastre sua chave."
     );
   }
 
-  // 1. Tentar OpenAI Whisper se houver openaiKey (Upload por FormData direto sem conversão base64 em RAM)
+  // 1. Tentar OpenAI Whisper se houver openaiKey
   if (openaiKey) {
     try {
       const formData = new FormData();
@@ -37,6 +197,8 @@ export async function processAudioTranscription(file: File | Blob, filename: str
       formData.append("model", "whisper-1");
       formData.append("response_format", "verbose_json");
       formData.append("language", "pt");
+      formData.append("temperature", "0");
+      formData.append("prompt", WHISPER_PT_PROMPT);
 
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -59,13 +221,14 @@ export async function processAudioTranscription(file: File | Blob, filename: str
           }));
 
         if (rawText.length > 0) {
-          return {
+          const initialResult: TranscriptionResponse = {
             raw_text: rawText,
             segments: segments.length > 0 ? segments : [
               { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
             ],
             speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
           };
+          return shouldRefine ? await refineTranscriptionAccuracy(initialResult) : initialResult;
         }
       }
     } catch (e) {
@@ -73,13 +236,16 @@ export async function processAudioTranscription(file: File | Blob, filename: str
     }
   }
 
-  // 2. Tentar Groq Whisper se houver groqKey (Upload por FormData direto)
+  // 2. Tentar Groq Whisper se houver groqKey
   if (groqKey) {
     try {
       const formData = new FormData();
       formData.append("file", file, filename);
       formData.append("model", "whisper-large-v3");
+      formData.append("response_format", "verbose_json");
       formData.append("language", "pt");
+      formData.append("temperature", "0");
+      formData.append("prompt", WHISPER_PT_PROMPT);
 
       const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
         method: "POST",
@@ -92,14 +258,24 @@ export async function processAudioTranscription(file: File | Blob, filename: str
       if (res.ok) {
         const data = await res.json();
         const rawText = data.text?.trim() || "";
+        const segments = (data.segments || [])
+          .filter((s: any) => s.text && s.text.trim().length > 0)
+          .map((s: any, idx: number) => ({
+            start_time: Math.round((s.start || 0) * 10) / 10,
+            end_time: Math.round((s.end || 0) * 10) / 10,
+            speaker: `Participante ${(idx % 2) + 1}`,
+            text: s.text.trim(),
+          }));
+
         if (rawText.length > 0) {
-          return {
+          const initialResult: TranscriptionResponse = {
             raw_text: rawText,
-            segments: [
+            segments: segments.length > 0 ? segments : [
               { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
             ],
-            speaker_map: { "Participante 1": "Participante 1" },
+            speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
           };
+          return shouldRefine ? await refineTranscriptionAccuracy(initialResult) : initialResult;
         }
       }
     } catch (e) {

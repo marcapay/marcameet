@@ -585,7 +585,10 @@ export async function fetchMeetingsFromSupabase(userId?: string, userEmail?: str
     ]);
 
     const transcriptsMap = new Map<string, any>();
-    (transcriptsRes.data || []).forEach((t: any) => transcriptsMap.set(t.meeting_id, t));
+    (transcriptsRes.data || []).forEach((t: any) => {
+      if (t?.speaker_map?.__is_audio_storage || t?.speaker_map?.__is_account_profile) return;
+      transcriptsMap.set(t.meeting_id, t);
+    });
 
     const segmentsMap = new Map<string, any[]>();
     (segmentsRes.data || []).forEach((seg: any) => {
@@ -857,4 +860,62 @@ export async function closeActiveMeetingInSupabase(meetingId: string): Promise<b
   } catch {
     return false;
   }
+}
+
+/**
+ * Salva o áudio da reunião no Supabase (como DataURL na tabela transcripts para funcionar sem precisar criar bucket separado)
+ */
+export async function saveAudioBlobToSupabase(meetingId: string, blob: Blob): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client || !blob || blob.size === 0 || blob.size > 6 * 1024 * 1024) return false;
+
+  try {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+
+    const meetingUuid = ensureValidUuid(meetingId);
+    const audioRowId = ensureValidUuid(`audio-file:${meetingUuid}`);
+
+    const { error } = await client.from('transcripts').upsert({
+      id: audioRowId,
+      meeting_id: meetingUuid,
+      raw_text: dataUrl,
+      speaker_map: {
+        __is_audio_storage: true,
+        mime_type: blob.type || 'audio/webm',
+        size_bytes: blob.size,
+      },
+    });
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Busca o áudio da reunião salvo no Supabase (retorna DataURL ou null)
+ */
+export async function fetchAudioDataUrlFromSupabase(meetingId: string): Promise<string | null> {
+  const client = getSupabaseClient();
+  if (!client || !meetingId) return null;
+
+  try {
+    const meetingUuid = ensureValidUuid(meetingId);
+    const audioRowId = ensureValidUuid(`audio-file:${meetingUuid}`);
+
+    const { data, error } = await client
+      .from('transcripts')
+      .select('raw_text')
+      .eq('id', audioRowId)
+      .limit(1);
+
+    if (!error && data && data.length > 0 && data[0].raw_text?.startsWith('data:audio')) {
+      return data[0].raw_text;
+    }
+  } catch {}
+  return null;
 }

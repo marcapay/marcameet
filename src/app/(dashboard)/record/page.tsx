@@ -120,7 +120,14 @@ export default function RecordPage() {
   // Iniciar Gravação
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+        },
+      });
       const meetingId = generateUuid();
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 
@@ -146,7 +153,14 @@ export default function RecordPage() {
   // Reconectar Microfone após interrupção
   const reconnectAudioSource = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+        },
+      });
       const current = recordingEngine.getActiveSession();
       if (current) {
         await recordingEngine.startRecording({

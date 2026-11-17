@@ -1,4 +1,4 @@
-import { getOldestChunk, deleteChunk, countChunks } from './chunkStore';
+import { getOldestChunk, markChunkProcessed, countChunks } from './chunkStore';
 import { uploadAudioChunkDeduplicated, isSupabaseConfigured } from '@/lib/supabase/client';
 import { processAudioTranscription, hasConfiguredApiKey } from '@/lib/ai';
 
@@ -98,7 +98,8 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
       }
 
       if (isUploadedOrTranscribed) {
-        await deleteChunk(chunk.id);
+        // Marcar chunk como processado mantendo o Blob na sessão para consolidar o áudio completo no final
+        await markChunkProcessed(chunk.id);
       } else {
         throw new Error('Falha no processamento do chunk');
       }

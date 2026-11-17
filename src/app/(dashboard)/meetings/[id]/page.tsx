@@ -343,7 +343,12 @@ export default function MeetingDetailPage() {
       )}
 
       {/* Player Integrado */}
-      <MediaPlayer seekToTime={seekTime} />
+      <MediaPlayer
+        meetingId={meeting.id}
+        fallbackDuration={meeting.duration_seconds}
+        transcriptText={transcript?.raw_text}
+        seekToTime={seekTime}
+      />
 
       {/* Abas Principais em Container Único Compacto */}
       <div className="p-1 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-1 w-full max-w-full overflow-hidden shadow-inner">

@@ -14,6 +14,7 @@ import {
   requestPersistentBrowserStorage,
 } from "@/lib/storage/indexedDbQueue";
 import { getCurrentAccount, subscribeAccountChange } from "@/lib/auth/accountSystem";
+import { deleteMeetingAudioBlob } from "@/lib/recording/chunkStore";
 
 const STORAGE_KEY_MEETINGS = "marcameet_meetings_v2";
 const getAccountStorageKey = (accountId: string) => `marcameet_meetings_acc_${accountId}`;
@@ -331,6 +332,7 @@ export async function deleteLocalMeeting(meetingId: string): Promise<void> {
 
   // 2. Excluir do IndexedDB
   await deleteCompletedMeetingFromIndexedDB(meetingId);
+  await deleteMeetingAudioBlob(meetingId);
 
   // 3. Excluir da tabela marcameet no Supabase
   await deleteMeetingFromSupabase(meetingId);
