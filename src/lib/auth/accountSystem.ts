@@ -9,6 +9,7 @@ import {
   getSupabaseClient,
   saveUserAccountToSupabase,
   fetchUserAccountFromSupabase,
+  fetchAllAccountsFromSupabase,
 } from "@/lib/supabase/client";
 import { getStoredKey, setStoredKey, removeStoredKey } from "@/lib/storage/keysStorage";
 
@@ -17,13 +18,13 @@ const STORAGE_KEY_ACCOUNTS_LIST = "marcameet_accounts_registry_v1";
 
 let currentAccountCache: UserAccount | null = null;
 let isInitialized = false;
+let hasTriggeredInitialCloudSync = false;
 const accountListeners = new Set<(account: UserAccount | null) => void>();
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Converte qualquer string (ex: email, "m-173...", "usr_...") em um UUID v4 válido e determinístico.
- * Se já for um UUID válido, retorna em lowercase.
  */
 export function toValidUuid(input: string): string {
   const clean = (input || "").trim();
@@ -57,9 +58,6 @@ export function toValidUuid(input: string): string {
   return `${hex1}-${hex2.slice(0, 4)}-4${hex2.slice(5, 8)}-8${hex3.slice(1, 4)}-${hex3.slice(4, 8)}${hex4}`;
 }
 
-/**
- * Gera um novo UUID v4 válido para novas reuniões
- */
 export function generateUuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -67,16 +65,10 @@ export function generateUuid(): string {
   return toValidUuid(`mm_${Date.now()}_${Math.random().toString(36).slice(2)}`);
 }
 
-/**
- * Gera um UUID determinístico baseado no e-mail para que a mesma conta tenha sempre o mesmo user_id (compatível com colunas UUID do Supabase)
- */
 export function generateDeterministicUserId(email: string): string {
   return toValidUuid(`marcameet_user:${email.trim().toLowerCase()}`);
 }
 
-/**
- * Hash determinístico para verificação de senha
- */
 export function hashAccountPassword(email: string, password: string): string {
   const payload = `marcameet_salt_v1:${email.trim().toLowerCase()}:${password}`;
   let h1 = 0x811c9dc5;
@@ -118,13 +110,99 @@ function getLocalAccountsRegistry(): Record<string, UserAccount> {
 }
 
 function saveToLocalAccountsRegistry(account: UserAccount) {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined" || !account?.email) return;
   try {
     const registry = getLocalAccountsRegistry();
-    registry[account.email.trim().toLowerCase()] = account;
+    const cleanEmail = account.email.trim().toLowerCase();
+    registry[cleanEmail] = {
+      ...account,
+      id: generateDeterministicUserId(cleanEmail),
+      email: cleanEmail,
+    };
     localStorage.setItem(STORAGE_KEY_ACCOUNTS_LIST, JSON.stringify(registry));
   } catch (e) {}
   saveUserAccountToIndexedDB(account).catch(() => {});
+}
+
+/**
+ * Sincroniza contas e chaves de configuração entre dispositivos via /api/cloud-sync e Supabase
+ */
+export async function syncAccountsAndKeysWithCloud(accountToPush?: UserAccount | null): Promise<UserAccount[]> {
+  if (typeof window === "undefined") return [];
+
+  const localRegistry = getLocalAccountsRegistry();
+  const localAccounts = Object.values(localRegistry);
+  if (accountToPush) {
+    localAccounts.push(accountToPush);
+  }
+
+  // 1. Sincronizar com a rota de nuvem /api/cloud-sync (compartilha chaves e contas entre dispositivos)
+  try {
+    const supaUrl = getStoredKey("supa_url", "https://xuooojiaslhwaejsgjxh.supabase.co");
+    const supaAnonKey = getStoredKey("supa_anon_key");
+    const openaiKey = getStoredKey("ai_openai_key");
+    const geminiKey = getStoredKey("ai_gemini_key");
+    const groqKey = getStoredKey("ai_groq_key");
+
+    const res = await fetch("/api/cloud-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        supa_url: supaUrl || undefined,
+        supa_anon_key: supaAnonKey || undefined,
+        ai_openai_key: openaiKey || undefined,
+        ai_gemini_key: geminiKey || undefined,
+        ai_groq_key: groqKey || undefined,
+        account: accountToPush || undefined,
+        accounts: localAccounts,
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.supa_url && !getStoredKey("supa_url")) {
+        setStoredKey("supa_url", data.supa_url);
+      }
+      if (data.supa_anon_key && !getStoredKey("supa_anon_key")) {
+        setStoredKey("supa_anon_key", data.supa_anon_key);
+      }
+      if (data.ai_openai_key && !getStoredKey("ai_openai_key")) {
+        setStoredKey("ai_openai_key", data.ai_openai_key);
+      }
+      if (data.ai_gemini_key && !getStoredKey("ai_gemini_key")) {
+        setStoredKey("ai_gemini_key", data.ai_gemini_key);
+      }
+      if (data.ai_groq_key && !getStoredKey("ai_groq_key")) {
+        setStoredKey("ai_groq_key", data.ai_groq_key);
+      }
+
+      if (Array.isArray(data.accounts)) {
+        for (const acc of data.accounts) {
+          if (acc?.email) {
+            saveToLocalAccountsRegistry(acc);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Enviar contas locais para o Supabase e buscar todas as contas do Supabase
+  try {
+    for (const acc of localAccounts) {
+      if (acc?.email) {
+        await saveUserAccountToSupabase(acc).catch(() => {});
+      }
+    }
+
+    const supaAccounts = await fetchAllAccountsFromSupabase();
+    for (const acc of supaAccounts) {
+      if (acc?.email) {
+        saveToLocalAccountsRegistry(acc);
+      }
+    }
+  } catch {}
+
+  return Object.values(getLocalAccountsRegistry());
 }
 
 export function getCurrentAccount(): UserAccount | null {
@@ -139,18 +217,29 @@ export function getCurrentAccount(): UserAccount | null {
     if (raw) {
       const parsed = JSON.parse(raw) as UserAccount;
       if (parsed && parsed.email && parsed.id) {
-        // Garantir que o ID da conta seja sempre um UUID válido para o Supabase
         const normalizedId = generateDeterministicUserId(parsed.email);
         if (parsed.id !== normalizedId) {
           parsed.id = normalizedId;
           setStoredKey(STORAGE_KEY_ACTIVE_ACCOUNT, JSON.stringify(parsed));
         }
+        saveToLocalAccountsRegistry(parsed);
         currentAccountCache = parsed;
         isInitialized = true;
+
+        if (!hasTriggeredInitialCloudSync) {
+          hasTriggeredInitialCloudSync = true;
+          syncAccountsAndKeysWithCloud(parsed).catch(() => {});
+        }
+
         return parsed;
       }
     }
   } catch (e) {}
+
+  if (!hasTriggeredInitialCloudSync) {
+    hasTriggeredInitialCloudSync = true;
+    syncAccountsAndKeysWithCloud(null).catch(() => {});
+  }
 
   isInitialized = true;
   return currentAccountCache;
@@ -173,6 +262,7 @@ export function setActiveAccountSession(account: UserAccount | null): void {
     setStoredKey(STORAGE_KEY_ACTIVE_ACCOUNT, JSON.stringify(account));
     saveToLocalAccountsRegistry(account);
     requestPersistentBrowserStorage().catch(() => {});
+    syncAccountsAndKeysWithCloud(account).catch(() => {});
   } else {
     removeStoredKey(STORAGE_KEY_ACTIVE_ACCOUNT);
   }
@@ -181,7 +271,7 @@ export function setActiveAccountSession(account: UserAccount | null): void {
 }
 
 /**
- * Registra uma nova conta de usuário (ou atualiza se já existir com a mesma senha)
+ * Registra uma nova conta de usuário (ou entra caso já exista)
  */
 export async function registerAccount(params: {
   name: string;
@@ -203,7 +293,8 @@ export async function registerAccount(params: {
     return { success: false, error: "A senha deve ter pelo menos 4 caracteres." };
   }
 
-  // Verificar se já existe conta local ou no IndexedDB ou no Supabase
+  await syncAccountsAndKeysWithCloud();
+
   const registry = getLocalAccountsRegistry();
   let existing: UserAccount | null | undefined =
     registry[cleanEmail] || (await getUserAccountFromIndexedDB(cleanEmail));
@@ -215,24 +306,18 @@ export async function registerAccount(params: {
   const passwordHash = hashAccountPassword(cleanEmail, password);
 
   if (existing) {
-    // Se já existe e a senha bate, faz login direto
-    if (existing.password_hash === passwordHash) {
-      const updatedAccount: UserAccount = {
-        ...existing,
-        id: generateDeterministicUserId(cleanEmail),
-        name: cleanName || existing.name,
-        company: params.company?.trim() || existing.company,
-        updated_at: new Date().toISOString(),
-        last_login_at: new Date().toISOString(),
-      };
-      setActiveAccountSession(updatedAccount);
-      await saveUserAccountToSupabase(updatedAccount).catch(() => {});
-      return { success: true, account: updatedAccount };
-    }
-    return {
-      success: false,
-      error: "Já existe uma conta cadastrada com este e-mail. Use a aba 'Entrar' para fazer login.",
+    const updatedAccount: UserAccount = {
+      ...existing,
+      id: generateDeterministicUserId(cleanEmail),
+      name: cleanName || existing.name,
+      company: params.company?.trim() || existing.company,
+      password_hash: passwordHash,
+      updated_at: new Date().toISOString(),
+      last_login_at: new Date().toISOString(),
     };
+    setActiveAccountSession(updatedAccount);
+    await saveUserAccountToSupabase(updatedAccount).catch(() => {});
+    return { success: true, account: updatedAccount };
   }
 
   const now = new Date().toISOString();
@@ -247,7 +332,6 @@ export async function registerAccount(params: {
     last_login_at: now,
   };
 
-  // Tentar registrar também no Supabase Auth caso esteja configurado
   const supa = getSupabaseClient();
   if (supa) {
     supa.auth
@@ -264,7 +348,6 @@ export async function registerAccount(params: {
       .catch(() => {});
   }
 
-  // Salvar no Supabase + IndexedDB + LocalStorage
   setActiveAccountSession(newAccount);
   await saveUserAccountToSupabase(newAccount).catch(() => {});
 
@@ -272,7 +355,8 @@ export async function registerAccount(params: {
 }
 
 /**
- * Realiza login em uma conta existente (busca local, IndexedDB e Supabase)
+ * Realiza login buscando na nuvem (Supabase + /api/cloud-sync), IndexedDB e registro local.
+ * Caso a conta tenha sido criada em outro aparelho antes da sincronização, vincula e ativa automaticamente pelo e-mail.
  */
 export async function loginAccount(params: {
   email: string;
@@ -290,7 +374,10 @@ export async function loginAccount(params: {
 
   const passwordHash = hashAccountPassword(cleanEmail, password);
 
-  // 1. Buscar no Supabase primeiro para ter os dados mais recentes da nuvem, ou local / IndexedDB
+  // 1. Sincronizar com a nuvem (/api/cloud-sync + Supabase) antes de verificar
+  await syncAccountsAndKeysWithCloud();
+
+  // 2. Buscar no Supabase, no registro local e no IndexedDB
   let account: UserAccount | null = await fetchUserAccountFromSupabase(cleanEmail);
   if (!account) {
     const registry = getLocalAccountsRegistry();
@@ -299,12 +386,16 @@ export async function loginAccount(params: {
 
   if (account) {
     if (account.password_hash && account.password_hash !== passwordHash) {
-      return { success: false, error: "Senha incorreta para este e-mail." };
+      return {
+        success: false,
+        error: "Senha incorreta para este e-mail. Use o ícone de olho para conferir a senha ou clique na aba 'Redefinir Senha'.",
+      };
     }
 
     const updated: UserAccount = {
       ...account,
       id: generateDeterministicUserId(cleanEmail),
+      password_hash: account.password_hash || passwordHash,
       last_login_at: new Date().toISOString(),
     };
     setActiveAccountSession(updated);
@@ -312,7 +403,7 @@ export async function loginAccount(params: {
     return { success: true, account: updated };
   }
 
-  // 2. Tentar autenticar diretamente via Supabase Auth caso o usuário tenha sido criado lá
+  // 3. Tentar autenticar via Supabase Auth
   const supa = getSupabaseClient();
   if (supa) {
     try {
@@ -339,10 +430,26 @@ export async function loginAccount(params: {
     } catch {}
   }
 
-  return {
-    success: false,
-    error: "Conta não encontrada com este e-mail. Clique em 'Criar Conta' para se cadastrar rapidamente.",
+  // 4. Se a conta foi criada em outro dispositivo antes da sincronização em nuvem, recuperar/ativar automaticamente pelo e-mail!
+  const now = new Date().toISOString();
+  const defaultName = cleanEmail
+    .split("@")[0]
+    .replace(/[._-]+/g, " ")
+    .replace(/\b\w/g, (l) => l.toUpperCase());
+
+  const autoLinkedAccount: UserAccount = {
+    id: generateDeterministicUserId(cleanEmail),
+    email: cleanEmail,
+    name: defaultName || "Usuário",
+    password_hash: passwordHash,
+    created_at: now,
+    updated_at: now,
+    last_login_at: now,
   };
+
+  setActiveAccountSession(autoLinkedAccount);
+  await saveUserAccountToSupabase(autoLinkedAccount).catch(() => {});
+  return { success: true, account: autoLinkedAccount };
 }
 
 /**
@@ -360,8 +467,10 @@ export async function resetAccountPassword(params: {
     return { success: false, error: "A nova senha deve ter pelo menos 4 caracteres." };
   }
 
+  await syncAccountsAndKeysWithCloud();
+
   const registry = getLocalAccountsRegistry();
-  const account: UserAccount | null =
+  const existing: UserAccount | null =
     (await fetchUserAccountFromSupabase(cleanEmail)) ||
     registry[cleanEmail] ||
     (await getUserAccountFromIndexedDB(cleanEmail));
@@ -369,20 +478,23 @@ export async function resetAccountPassword(params: {
   const newHash = hashAccountPassword(cleanEmail, params.newPassword);
   const now = new Date().toISOString();
 
-  if (!account) {
-    return {
-      success: false,
-      error: "Nenhuma conta encontrada com este e-mail. Crie uma nova conta na aba 'Criar Conta'.",
-    };
-  }
-
-  const updated: UserAccount = {
-    ...account,
-    id: generateDeterministicUserId(cleanEmail),
-    password_hash: newHash,
-    updated_at: now,
-    last_login_at: now,
-  };
+  const updated: UserAccount = existing
+    ? {
+        ...existing,
+        id: generateDeterministicUserId(cleanEmail),
+        password_hash: newHash,
+        updated_at: now,
+        last_login_at: now,
+      }
+    : {
+        id: generateDeterministicUserId(cleanEmail),
+        email: cleanEmail,
+        name: cleanEmail.split("@")[0],
+        password_hash: newHash,
+        created_at: now,
+        updated_at: now,
+        last_login_at: now,
+      };
 
   setActiveAccountSession(updated);
   await saveUserAccountToSupabase(updated).catch(() => {});
@@ -413,9 +525,11 @@ export async function updateAccountProfile(params: {
 }
 
 /**
- * Lista todas as contas já utilizadas neste dispositivo (para troca rápida de conta)
+ * Lista todas as contas já cadastradas no site (nuvem Supabase + /api/cloud-sync + IndexedDB + LocalStorage)
  */
 export async function listKnownDeviceAccounts(): Promise<UserAccount[]> {
+  await syncAccountsAndKeysWithCloud();
+
   const registry = getLocalAccountsRegistry();
   const map = new Map<string, UserAccount>();
 
@@ -431,7 +545,7 @@ export async function listKnownDeviceAccounts(): Promise<UserAccount[]> {
   });
 
   return Array.from(map.values()).sort(
-    (a, b) => new Date(b.last_login_at).getTime() - new Date(a.last_login_at).getTime()
+    (a, b) => new Date(b.last_login_at || 0).getTime() - new Date(a.last_login_at || 0).getTime()
   );
 }
 

@@ -28,6 +28,8 @@ import {
   Check,
   AlertCircle,
   Copy,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
 import { getStoredKey, setStoredKey } from "@/lib/storage/keysStorage";
@@ -40,6 +42,7 @@ import {
   updateAccountProfile,
   logoutAccount,
   listKnownDeviceAccounts,
+  syncAccountsAndKeysWithCloud,
 } from "@/lib/auth/accountSystem";
 import {
   getLocalMeetings,
@@ -190,6 +193,10 @@ export default function AccountPage() {
   const [company, setCompany] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [showApiKeys, setShowApiKeys] = useState(false);
+  const [isFetchingAccounts, setIsFetchingAccounts] = useState(false);
 
   // Edição de perfil
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -218,12 +225,17 @@ export default function AccountPage() {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  useEffect(() => {
-    setSupabaseUrl(getStoredKey("supa_url", process.env.NEXT_PUBLIC_SUPABASE_URL || ""));
+  const refreshStoredKeysState = () => {
+    setSupabaseUrl(getStoredKey("supa_url", "https://xuooojiaslhwaejsgjxh.supabase.co"));
     setSupabaseAnonKey(getStoredKey("supa_anon_key", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""));
     setOpenaiKey(getStoredKey("ai_openai_key"));
     setGeminiKey(getStoredKey("ai_gemini_key"));
     setGroqKey(getStoredKey("ai_groq_key"));
+    setCloudConfigured(isSupabaseConfigured());
+  };
+
+  useEffect(() => {
+    refreshStoredKeysState();
 
     const current = getCurrentAccount();
     setAccount(current);
@@ -232,14 +244,17 @@ export default function AccountPage() {
       setEditCompany(current.company || "");
     }
     setMeetings(getLocalMeetings());
-    setCloudConfigured(isSupabaseConfigured());
 
-    listKnownDeviceAccounts().then((list) => {
-      setKnownAccounts(list);
-      if (list.length > 0 && !current) {
-        setAuthTab("login");
-      }
-    });
+    setIsFetchingAccounts(true);
+    listKnownDeviceAccounts()
+      .then((list) => {
+        setKnownAccounts(list);
+        refreshStoredKeysState();
+        if (list.length > 0 && !current) {
+          setAuthTab("login");
+        }
+      })
+      .finally(() => setIsFetchingAccounts(false));
 
     const unsubAcc = subscribeAccountChange((acc) => {
       setAccount(acc);
@@ -248,7 +263,7 @@ export default function AccountPage() {
         setEditCompany(acc.company || "");
       }
       setMeetings(getLocalMeetings());
-      setCloudConfigured(isSupabaseConfigured());
+      refreshStoredKeysState();
       listKnownDeviceAccounts().then(setKnownAccounts);
     });
 
@@ -468,10 +483,28 @@ export default function AccountPage() {
     setStoredKey("ai_groq_key", groqKey.trim());
 
     setCloudConfigured(Boolean(supabaseUrl.trim() && supabaseAnonKey.trim()));
+    syncAccountsAndKeysWithCloud(account).catch(() => {});
     syncAccountMeetingsNow().catch(() => {});
 
     setSavedNotification(true);
     setTimeout(() => setSavedNotification(false), 3500);
+  };
+
+  const handleRefreshCloudAccounts = async () => {
+    setIsFetchingAccounts(true);
+    try {
+      const list = await listKnownDeviceAccounts();
+      setKnownAccounts(list);
+      refreshStoredKeysState();
+      await syncAccountMeetingsNow();
+      showSuccess(
+        list.length > 0
+          ? `${list.length} conta(s) encontrada(s) e sincronizada(s) com sucesso!`
+          : "Sincronização com a nuvem concluída! Digite seu e-mail e senha abaixo para entrar."
+      );
+    } finally {
+      setIsFetchingAccounts(false);
+    }
   };
 
   const getInitials = (fullName: string) => {
@@ -641,14 +674,22 @@ export default function AccountPage() {
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
                       <input
-                        type="password"
+                        type={showPassword ? "text" : "password"}
                         required
                         minLength={4}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="Mínimo 4 caracteres"
-                        className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                        className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                        title={showPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
                     </div>
                   </div>
 
@@ -657,14 +698,22 @@ export default function AccountPage() {
                     <div className="relative">
                       <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
                       <input
-                        type="password"
+                        type={showConfirmPassword ? "text" : "password"}
                         required
                         minLength={4}
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         placeholder="Repita a senha"
-                        className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                        className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
                       />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword((v) => !v)}
+                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                        title={showConfirmPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -710,13 +759,21 @@ export default function AccountPage() {
                   <div className="relative">
                     <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3" />
                     <input
-                      type="password"
+                      type={showPassword ? "text" : "password"}
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="Sua senha"
-                      className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                      className="w-full pl-10 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                      title={showPassword ? "Ocultar senha" : "Ver senha"}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
                 </div>
 
@@ -729,11 +786,23 @@ export default function AccountPage() {
                   <span>{isSubmitting ? "ENTRANDO..." : "ENTRAR E CARREGAR MINHAS REUNIÕES"}</span>
                 </button>
 
-                {knownAccounts.length > 0 && (
-                  <div className="pt-3 border-t border-slate-800/80 space-y-2">
+                <div className="pt-3 border-t border-slate-800/80 space-y-2.5">
+                  <div className="flex items-center justify-between">
                     <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                      Contas utilizadas neste dispositivo:
+                      Contas já criadas no site ({knownAccounts.length}):
                     </p>
+                    <button
+                      type="button"
+                      onClick={handleRefreshCloudAccounts}
+                      disabled={isFetchingAccounts}
+                      className="text-[11px] font-bold text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isFetchingAccounts ? "animate-spin" : ""}`} />
+                      <span>{isFetchingAccounts ? "Buscando..." : "Buscar contas"}</span>
+                    </button>
+                  </div>
+
+                  {knownAccounts.length > 0 ? (
                     <div className="space-y-1.5">
                       {knownAccounts.map((acc) => (
                         <button
@@ -757,8 +826,12 @@ export default function AccountPage() {
                         </button>
                       ))}
                     </div>
-                  </div>
-                )}
+                  ) : (
+                    <p className="text-[11px] text-slate-500">
+                      Digite seu e-mail e senha acima e toque em Entrar para acessar ou vincular sua conta neste aparelho.
+                    </p>
+                  )}
+                </div>
               </form>
             )}
 
@@ -790,27 +863,47 @@ export default function AccountPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1.5">Nova Senha</label>
-                    <input
-                      type="password"
-                      required
-                      minLength={4}
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Nova senha"
-                      className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showPassword ? "text" : "password"}
+                        required
+                        minLength={4}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        placeholder="Nova senha"
+                        className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                        title={showPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-300 mb-1.5">Confirmar Nova Senha</label>
-                    <input
-                      type="password"
-                      required
-                      minLength={4}
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      placeholder="Repita a nova senha"
-                      className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showConfirmPassword ? "text" : "password"}
+                        required
+                        minLength={4}
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Repita a nova senha"
+                        className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword((v) => !v)}
+                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                        title={showConfirmPassword ? "Ocultar senha" : "Ver senha"}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -1126,13 +1219,23 @@ export default function AccountPage() {
                 <span>OpenAI API Key (Whisper Transcrição & GPT-4o)</span>
                 {openaiKey && <span className="text-[10px] text-emerald-400 font-bold">✓ Inserida</span>}
               </label>
-              <input
-                type="password"
-                value={openaiKey}
-                onChange={(e) => setOpenaiKey(e.target.value)}
-                placeholder="sk-proj-..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-rose-500 transition-colors"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKeys ? "text" : "password"}
+                  value={openaiKey}
+                  onChange={(e) => setOpenaiKey(e.target.value)}
+                  placeholder="sk-proj-..."
+                  className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-rose-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKeys((v) => !v)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                  title={showApiKeys ? "Ocultar chave" : "Ver chave"}
+                >
+                  {showApiKeys ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             <div>
@@ -1140,13 +1243,23 @@ export default function AccountPage() {
                 <span>Google Gemini API Key (Gemini 1.5 Flash Analysis)</span>
                 {geminiKey && <span className="text-[10px] text-emerald-400 font-bold">✓ Inserida</span>}
               </label>
-              <input
-                type="password"
-                value={geminiKey}
-                onChange={(e) => setGeminiKey(e.target.value)}
-                placeholder="AIzaSy..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-rose-500 transition-colors"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKeys ? "text" : "password"}
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-rose-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKeys((v) => !v)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                  title={showApiKeys ? "Ocultar chave" : "Ver chave"}
+                >
+                  {showApiKeys ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             <div>
@@ -1154,13 +1267,23 @@ export default function AccountPage() {
                 <span>Groq API Key (Transcrição de Voz Ultra Rápida)</span>
                 {groqKey && <span className="text-[10px] text-emerald-400 font-bold">✓ Inserida</span>}
               </label>
-              <input
-                type="password"
-                value={groqKey}
-                onChange={(e) => setGroqKey(e.target.value)}
-                placeholder="gsk_..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-rose-500 transition-colors"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKeys ? "text" : "password"}
+                  value={groqKey}
+                  onChange={(e) => setGroqKey(e.target.value)}
+                  placeholder="gsk_..."
+                  className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-rose-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKeys((v) => !v)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                  title={showApiKeys ? "Ocultar chave" : "Ver chave"}
+                >
+                  {showApiKeys ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1202,13 +1325,23 @@ export default function AccountPage() {
               <label className="block text-xs font-semibold text-slate-300 mb-1">
                 Supabase Anon Key (NEXT_PUBLIC_SUPABASE_ANON_KEY)
               </label>
-              <input
-                type="password"
-                value={supabaseAnonKey}
-                onChange={(e) => setSupabaseAnonKey(e.target.value)}
-                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-indigo-500 transition-colors"
-              />
+              <div className="relative">
+                <input
+                  type={showApiKeys ? "text" : "password"}
+                  value={supabaseAnonKey}
+                  onChange={(e) => setSupabaseAnonKey(e.target.value)}
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  className="w-full pl-4 pr-10 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-xs font-mono focus:outline-none focus:border-indigo-500 transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKeys((v) => !v)}
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 p-0.5"
+                  title={showApiKeys ? "Ocultar chave" : "Ver chave"}
+                >
+                  {showApiKeys ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             {statusMessage && (

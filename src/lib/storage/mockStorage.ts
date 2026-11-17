@@ -3,6 +3,7 @@ import {
   deleteMeetingFromSupabase,
   saveMeetingToSupabase,
   fetchMeetingsFromSupabase,
+  saveUserAccountToSupabase,
   isSupabaseConfigured,
   ensureValidUuid,
 } from "@/lib/supabase/client";
@@ -171,6 +172,9 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
   let syncedCloud = false;
   if (isSupabaseConfigured()) {
     try {
+      if (account) {
+        await saveUserAccountToSupabase(account).catch(() => {});
+      }
       const cloudMeetings = await fetchMeetingsFromSupabase(account?.id, account?.email);
       cloudMeetings.forEach((cloudItem) => {
         if (cloudItem?.meeting?.id && !isLegacyMockMeeting(cloudItem)) {

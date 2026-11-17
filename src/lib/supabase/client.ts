@@ -1,6 +1,8 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { CompleteMeetingDetails, ActiveMeetingSessionState, AudioChunkMetadata, UserAccount } from '@/types/database';
-import { getStoredKey } from '@/lib/storage/keysStorage';
+import { getStoredKey, setStoredKey } from '@/lib/storage/keysStorage';
+
+const DEFAULT_SUPABASE_URL = "https://xuooojiaslhwaejsgjxh.supabase.co";
 
 let cachedClient: SupabaseClient | null = null;
 let cachedUrl = "";
@@ -45,7 +47,9 @@ export function ensureValidUuid(input?: string | null, fallbackSeed = "default")
 }
 
 export function getSupabaseClient(): SupabaseClient | null {
-  const url = getStoredKey("supa_url", process.env.NEXT_PUBLIC_SUPABASE_URL || "");
+  const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const fallbackUrl = envUrl && !envUrl.includes("placeholder") ? envUrl : DEFAULT_SUPABASE_URL;
+  const url = getStoredKey("supa_url", fallbackUrl) || DEFAULT_SUPABASE_URL;
   const key = getStoredKey("supa_anon_key", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "");
 
   if (url && key && !url.includes("placeholder") && !key.includes("placeholder") && url.startsWith("http")) {
@@ -78,7 +82,7 @@ export const isSupabaseConfigured = () => {
 export const supabase = getSupabaseClient();
 
 /**
- * Salva ou atualiza uma conta de usuário no Supabase (tabela marcameet_users E registro espelho em marcameet)
+ * Salva ou atualiza uma conta de usuário no Supabase (tabela marcameet_users E registro espelho em marcameet + transcripts)
  */
 export async function saveUserAccountToSupabase(account: UserAccount): Promise<boolean> {
   const client = getSupabaseClient();
@@ -88,7 +92,6 @@ export async function saveUserAccountToSupabase(account: UserAccount): Promise<b
   const cleanEmail = account.email.trim().toLowerCase();
 
   try {
-    // 1. Tentar salvar na tabela marcameet_users (caso exista)
     await client.from('marcameet_users').upsert({
       id: accountUuid,
       email: cleanEmail,
@@ -102,7 +105,6 @@ export async function saveUserAccountToSupabase(account: UserAccount): Promise<b
   } catch {}
 
   try {
-    // 2. Salvar também um registro de perfil na tabela marcameet (funciona mesmo sem criar tabela nova!)
     const profileRowId = ensureValidUuid(`account_profile:${cleanEmail}`);
     const { error } = await client.from('marcameet').upsert({
       id: profileRowId,
@@ -111,76 +113,165 @@ export async function saveUserAccountToSupabase(account: UserAccount): Promise<b
       description: cleanEmail,
       meeting_date: account.created_at || new Date().toISOString(),
       duration_seconds: 0,
-      source_type: 'account_profile',
+      source_type: 'recording',
       status: 'CONCLUIDA',
       error_message: account.password_hash,
       tags: ['__account_profile__', cleanEmail, account.company || ''],
       updated_at: new Date().toISOString(),
     });
+
+    // Salvar também metadados completos da conta + chaves de API configuradas no dispositivo em transcripts
+    const transcriptAccId = ensureValidUuid(`t-acc-${cleanEmail}`);
+    await client.from('transcripts').upsert({
+      id: transcriptAccId,
+      meeting_id: profileRowId,
+      raw_text: 'ACCOUNT_PROFILE',
+      speaker_map: {
+        __is_account_profile: true,
+        account: {
+          ...account,
+          id: accountUuid,
+          email: cleanEmail,
+        },
+        keys: {
+          ai_openai_key: getStoredKey("ai_openai_key"),
+          ai_gemini_key: getStoredKey("ai_gemini_key"),
+          ai_groq_key: getStoredKey("ai_groq_key"),
+        },
+      },
+    });
+
     return !error;
   } catch {
     return false;
   }
 }
 
+function restoreKeysFromAccountMetadata(keysObj: any) {
+  if (!keysObj || typeof window === "undefined") return;
+  if (keysObj.ai_openai_key && !getStoredKey("ai_openai_key")) {
+    setStoredKey("ai_openai_key", keysObj.ai_openai_key);
+  }
+  if (keysObj.ai_gemini_key && !getStoredKey("ai_gemini_key")) {
+    setStoredKey("ai_gemini_key", keysObj.ai_gemini_key);
+  }
+  if (keysObj.ai_groq_key && !getStoredKey("ai_groq_key")) {
+    setStoredKey("ai_groq_key", keysObj.ai_groq_key);
+  }
+}
+
 /**
- * Busca uma conta de usuário pelo e-mail no Supabase (marcameet_users ou registro de perfil em marcameet)
+ * Lista todas as contas já cadastradas no Supabase (marcameet_users, perfis em marcameet e metadados em transcripts)
  */
-export async function fetchUserAccountFromSupabase(email: string): Promise<UserAccount | null> {
+export async function fetchAllAccountsFromSupabase(): Promise<UserAccount[]> {
   const client = getSupabaseClient();
-  if (!client) return null;
+  if (!client) return [];
 
-  const normalizedEmail = email.trim().toLowerCase();
-  const accountUuid = ensureValidUuid(`marcameet_user:${normalizedEmail}`);
+  const accountsMap = new Map<string, UserAccount>();
 
-  // 1. Tentar buscar em marcameet_users
+  // 1. Buscar de marcameet_users se existir
   try {
-    const { data, error } = await client
-      .from('marcameet_users')
-      .select('*')
-      .eq('email', normalizedEmail)
-      .limit(1);
-
-    if (!error && data && data.length > 0) {
-      const row = data[0];
-      return {
-        id: ensureValidUuid(row.id, `marcameet_user:${normalizedEmail}`),
-        email: row.email,
-        name: row.name || normalizedEmail.split('@')[0],
-        company: row.company || undefined,
-        password_hash: row.password_hash || '',
-        created_at: row.created_at || new Date().toISOString(),
-        updated_at: row.updated_at || new Date().toISOString(),
-        last_login_at: row.last_login_at || new Date().toISOString(),
-      };
+    const { data, error } = await client.from('marcameet_users').select('*').limit(100);
+    if (!error && Array.isArray(data)) {
+      for (const row of data) {
+        if (row.email) {
+          const email = row.email.trim().toLowerCase();
+          accountsMap.set(email, {
+            id: ensureValidUuid(row.id, `marcameet_user:${email}`),
+            email,
+            name: row.name || email.split('@')[0],
+            company: row.company || undefined,
+            password_hash: row.password_hash || '',
+            created_at: row.created_at || new Date().toISOString(),
+            updated_at: row.updated_at || new Date().toISOString(),
+            last_login_at: row.last_login_at || new Date().toISOString(),
+          });
+        }
+      }
     }
   } catch {}
 
-  // 2. Buscar registro de perfil na tabela marcameet
+  // 2. Buscar de marcameet e transcripts
   try {
-    const profileRowId = ensureValidUuid(`account_profile:${normalizedEmail}`);
-    const { data, error } = await client
+    const { data: rows } = await client
       .from('marcameet')
       .select('*')
-      .eq('id', profileRowId)
-      .limit(1);
+      .order('updated_at', { ascending: false })
+      .limit(100);
 
-    if (!error && data && data.length > 0) {
-      const row = data[0];
-      return {
-        id: ensureValidUuid(row.user_id, `marcameet_user:${normalizedEmail}`),
-        email: normalizedEmail,
-        name: row.title || normalizedEmail.split('@')[0],
-        company: Array.isArray(row.tags) && row.tags[2] ? row.tags[2] : undefined,
-        password_hash: row.error_message || '',
-        created_at: row.created_at || new Date().toISOString(),
-        updated_at: row.updated_at || new Date().toISOString(),
-        last_login_at: row.updated_at || new Date().toISOString(),
-      };
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        const isProfileRow =
+          row.source_type === 'account_profile' ||
+          (Array.isArray(row.tags) && row.tags.includes('__account_profile__'));
+
+        if (isProfileRow && row.description && row.description.includes('@')) {
+          const email = row.description.trim().toLowerCase();
+          if (!accountsMap.has(email)) {
+            accountsMap.set(email, {
+              id: ensureValidUuid(row.user_id, `marcameet_user:${email}`),
+              email,
+              name: row.title || email.split('@')[0],
+              company: Array.isArray(row.tags) && row.tags[2] ? row.tags[2] : undefined,
+              password_hash: row.error_message || '',
+              created_at: row.created_at || new Date().toISOString(),
+              updated_at: row.updated_at || new Date().toISOString(),
+              last_login_at: row.updated_at || new Date().toISOString(),
+            });
+          }
+        }
+      }
+    }
+
+    const { data: tRows } = await client
+      .from('transcripts')
+      .select('speaker_map')
+      .limit(100);
+
+    if (Array.isArray(tRows)) {
+      for (const t of tRows) {
+        const sm = t?.speaker_map;
+        if (sm?.__is_account_profile && sm?.account?.email) {
+          const email = sm.account.email.trim().toLowerCase();
+          accountsMap.set(email, {
+            id: ensureValidUuid(sm.account.id, `marcameet_user:${email}`),
+            email,
+            name: sm.account.name || email.split('@')[0],
+            company: sm.account.company || undefined,
+            password_hash: sm.account.password_hash || '',
+            created_at: sm.account.created_at || new Date().toISOString(),
+            updated_at: sm.account.updated_at || new Date().toISOString(),
+            last_login_at: sm.account.last_login_at || new Date().toISOString(),
+          });
+          restoreKeysFromAccountMetadata(sm.keys);
+        } else if (sm?.__account_meta?.user_email) {
+          const email = sm.__account_meta.user_email.trim().toLowerCase();
+          if (!accountsMap.has(email)) {
+            accountsMap.set(email, {
+              id: ensureValidUuid(sm.__account_meta.user_id, `marcameet_user:${email}`),
+              email,
+              name: email.split('@')[0],
+              password_hash: '',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              last_login_at: new Date().toISOString(),
+            });
+          }
+        }
+      }
     }
   } catch {}
 
-  return null;
+  return Array.from(accountsMap.values());
+}
+
+/**
+ * Busca uma conta de usuário pelo e-mail no Supabase
+ */
+export async function fetchUserAccountFromSupabase(email: string): Promise<UserAccount | null> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const all = await fetchAllAccountsFromSupabase();
+  return all.find((a) => a.email.toLowerCase() === normalizedEmail) || null;
 }
 
 /**
