@@ -10,6 +10,7 @@ interface CloudSyncData {
   ai_groq_key?: string;
   accounts: Record<string, any>;
   meetings: Record<string, any>;
+  chunks?: Record<string, any>;
   updated_at: string;
 }
 
@@ -145,6 +146,31 @@ export async function POST(req: NextRequest) {
 
     if (body.deletedMeetingId) {
       delete state.meetings[body.deletedMeetingId];
+    }
+
+    if (body.chunk && body.chunk.id) {
+      if (!state.chunks) state.chunks = {};
+      const chunkId = String(body.chunk.id);
+      const alreadyExists = Boolean(state.chunks[chunkId]);
+      if (!alreadyExists) {
+        state.chunks[chunkId] = {
+          id: chunkId,
+          sessionId: body.chunk.sessionId,
+          sequence: body.chunk.sequence,
+          mimeType: body.chunk.mimeType || "audio/webm",
+          sizeBytes: body.chunk.sizeBytes || 0,
+          createdAt: body.chunk.createdAt || Date.now(),
+          syncedAt: new Date().toISOString(),
+        };
+      }
+      state.updated_at = new Date().toISOString();
+      writeSyncState(state);
+      return NextResponse.json({
+        ok: true,
+        chunkId,
+        deduplicated: alreadyExists,
+        syncedAt: state.updated_at,
+      });
     }
 
     state.updated_at = new Date().toISOString();

@@ -33,11 +33,11 @@ export function BackgroundModePrompt() {
           </div>
           <div className="text-xs leading-relaxed">
             <span className="font-bold text-white flex items-center gap-1.5">
-              <span>Proteção de Gravação (Screen Wake Lock + Salvamento Periódico)</span>
+              <span>Gravação Contínua em Segundo Plano + Proteção IndexedDB</span>
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 inline" />
             </span>
             <span className="text-slate-400">
-              Ao iniciar uma gravação, a tela permanecerá ligada automaticamente e os trechos de áudio serão salvos periodicamente. Mantenha a página aberta e visível durante a reunião.
+              Você pode trocar de aba no navegador ou navegar por outras páginas sem interromper a gravação. Os segmentos de áudio são salvos a cada 5s no IndexedDB e sincronizados automaticamente.
             </span>
           </div>
         </div>

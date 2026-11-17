@@ -195,8 +195,27 @@ export type ActiveMeetingEngineStatus =
   | 'finished'
   | 'error';
 
-export type AudioSourceStatus = 'active' | 'ended' | 'interrupted';
+export type AudioSourceStatus = 'active' | 'ended' | 'interrupted' | 'muted';
 export type MediaRecorderStatus = 'inactive' | 'recording' | 'paused';
+
+export type VisualRecordingState =
+  | 'idle'
+  | 'recording'    // 🔴 Gravando
+  | 'paused'       // ⏸️ Pausado
+  | 'interrupted'  // ⚠️ Captura interrompida
+  | 'syncing'      // ☁️ Sincronizando áudio
+  | 'saved';       // ✅ Gravação salva
+
+export interface InterruptionGap {
+  id: string;
+  started_at: string;
+  started_at_ms: number;
+  ended_at?: string;
+  ended_at_ms?: number;
+  duration_seconds?: number;
+  reason: 'track_muted' | 'track_ended' | 'os_suspended' | 'recorder_error' | 'page_reloaded';
+  message: string;
+}
 
 export interface ActiveMeetingSessionState {
   meeting_id: string;
@@ -208,17 +227,24 @@ export interface ActiveMeetingSessionState {
   started_at: string; // ISO string or timestamp
   started_at_ms: number;
   last_chunk_at: string;
+  last_chunk_at_ms?: number;
   last_activity_at: string;
   ended_at?: string | null;
   source_status: AudioSourceStatus;
   recorder_status: MediaRecorderStatus;
   accumulated_paused_ms: number;
   paused_at_ms?: number;
-  auto_paused_reason?: 'screen_off' | 'mic_mute' | 'user' | null;
+  auto_paused_reason?: 'screen_off' | 'mic_mute' | 'os_suspended' | 'user' | null;
   wake_lock_enabled: boolean;
   transcript_draft?: string;
   speaker_map?: Record<string, string>;
   segments_draft?: TranscriptSegment[];
+  interruption_gaps?: InterruptionGap[];
+  total_chunks_saved?: number;
+  synced_chunks_count?: number;
+  pending_sync_chunks?: number;
+  is_syncing_audio?: boolean;
+  last_synced_at?: string;
 }
 
 export interface AudioChunkMetadata {

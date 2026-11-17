@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
-import { AlertTriangle, ArrowRight, Square, Smartphone } from "lucide-react";
+import { AlertTriangle, ArrowRight, Square, Smartphone, Pause, Play, Cloud, CheckCircle2 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 import { getWakeLockState, subscribeWakeLockState, WakeLockStateInfo } from "@/lib/audio/recordingKeepAlive";
+import { getUploaderState, subscribeUploaderState, UploaderSyncState } from "@/lib/recording/chunkUploader";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAIAnalysis } from "@/lib/ai";
 import { getCurrentAccount } from "@/lib/auth/accountSystem";
@@ -17,6 +18,7 @@ export function ActiveMeetingBanner() {
 
   const [activeSession, setActiveSession] = useState<ActiveMeetingSessionState | null>(null);
   const [wakeInfo, setWakeInfo] = useState<WakeLockStateInfo>(getWakeLockState());
+  const [syncInfo, setSyncInfo] = useState<UploaderSyncState>(getUploaderState());
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
 
@@ -24,10 +26,14 @@ export function ActiveMeetingBanner() {
     const unsubscribe = recordingEngine.subscribe({
       onStatusChange: (status, session) => {
         if (session && status !== "finished" && status !== "idle") {
-          setActiveSession(session);
+          setActiveSession({ ...session });
         } else {
           setActiveSession(null);
         }
+      },
+      onChunkCaptured: () => {
+        const s = recordingEngine.getActiveSession();
+        if (s) setActiveSession({ ...s });
       },
     });
 
@@ -35,15 +41,20 @@ export function ActiveMeetingBanner() {
       setWakeInfo(info);
     });
 
+    const unsubSync = subscribeUploaderState((state) => {
+      setSyncInfo(state);
+    });
+
     recordingEngine.restoreActiveSessionOnLoad().then((session) => {
       if (session && session.status !== "finished") {
-        setActiveSession(session);
+        setActiveSession({ ...session });
       }
     });
 
     return () => {
       unsubscribe();
       unsubWake();
+      unsubSync();
     };
   }, []);
 
@@ -219,40 +230,50 @@ export function ActiveMeetingBanner() {
     (activeSession.source_type === "online_meeting" && pathname === "/online-meet") ||
     (activeSession.source_type !== "online_meeting" && pathname === "/record");
 
-  const isInterrupted = activeSession.status === "interrupted" || !recordingEngine.hasLiveRecorder();
+  const isInterrupted =
+    activeSession.status === "interrupted" ||
+    activeSession.source_status === "ended" ||
+    activeSession.source_status === "muted" ||
+    !recordingEngine.hasLiveRecorder();
+
+  const isPaused = activeSession.recorder_status === "paused" && !isInterrupted;
+  const totalChunks = Math.max(activeSession.total_chunks_saved || 0, syncInfo.totalCount || 0);
 
   return (
     <>
       {!isOnRecordingPage && (
         <div className="bg-gradient-to-r from-rose-900/90 via-indigo-900/90 to-purple-900/90 border-b border-rose-500/30 text-white px-4 py-2.5 shadow-xl backdrop-blur-md sticky top-16 z-30 flex flex-col sm:flex-row items-center justify-between gap-3 animate-fadeIn">
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             {isInterrupted ? (
-              <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold">
-                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span>GRAVAÇÃO INTERROMPIDA (PRONTA PARA RECUPERAR)</span>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-bold">
+                <span>⚠️ Captura interrompida</span>
               </div>
-            ) : activeSession.recorder_status === "paused" ? (
-              <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs font-bold">
-                <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span>
-                  {activeSession.auto_paused_reason === "screen_off"
-                    ? "PAUSADO (TELA APAGADA)"
-                    : activeSession.auto_paused_reason === "mic_mute"
-                    ? "PAUSADO (SEM ÁUDIO)"
-                    : "PAUSADO"}
-                </span>
+            ) : isPaused ? (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs font-bold">
+                <span>⏸️ Pausado</span>
               </div>
             ) : (
-              <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold animate-pulse">
-                <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                <span>🔴 GRAVANDO</span>
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-200 text-xs font-bold animate-pulse">
+                <span>🔴 Gravando</span>
               </div>
             )}
 
+            {syncInfo.isSyncing || syncInfo.pendingCount > 0 ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-500/20 border border-sky-500/30 text-sky-200 text-[11px] font-semibold">
+                <Cloud className="w-3 h-3 text-sky-300 animate-pulse" />
+                <span>☁️ Sincronizando áudio ({syncInfo.syncedCount}/{totalChunks})</span>
+              </span>
+            ) : totalChunks > 0 ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-200 text-[11px] font-semibold">
+                <CheckCircle2 className="w-3 h-3 text-emerald-300" />
+                <span>✅ Gravação salva ({totalChunks} seg.)</span>
+              </span>
+            ) : null}
+
             {wakeInfo.status === "active" && !isInterrupted && (
-              <span className="hidden md:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-[11px] font-semibold">
+              <span className="hidden lg:inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-[11px] font-semibold">
                 <Smartphone className="w-3 h-3 text-emerald-400" />
-                <span>Tela ativa durante a gravação</span>
+                <span>Tela ativa</span>
               </span>
             )}
 
@@ -263,18 +284,38 @@ export function ActiveMeetingBanner() {
               <p className="text-[10px] text-slate-300">
                 Duração: <RecordingTimerDisplay className="font-mono font-bold text-amber-300" /> •{" "}
                 {isInterrupted
-                  ? "Os trechos de áudio foram salvos periodicamente. Retome ou finalize para gerar a ata."
-                  : "Mantenha a página aberta e visível durante a gravação."}
+                  ? "Captura suspensa/interrompida. Os segmentos anteriores estão salvos no IndexedDB."
+                  : "Sessão ativa em segundo plano enquanto você navega pelo sistema."}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
+            {!isInterrupted && (
+              isPaused ? (
+                <button
+                  onClick={() => recordingEngine.resumeRecording()}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md transition-all active:scale-95"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Retomar</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => recordingEngine.pauseRecording("user")}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold shadow-md transition-all active:scale-95"
+                >
+                  <Pause className="w-3.5 h-3.5 fill-current" />
+                  <span>Pausar</span>
+                </button>
+              )
+            )}
+
             <button
               onClick={handleRetakeMeeting}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md transition-all active:scale-95"
             >
-              <span>{isInterrupted ? "Continuar gravação" : "Voltar para tela de gravação"}</span>
+              <span>{isInterrupted ? "Reconectar / Retomar" : "Abrir Gravador"}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
             <button
@@ -282,7 +323,7 @@ export function ActiveMeetingBanner() {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/80 hover:bg-rose-600 text-white text-xs font-semibold shadow-md transition-all active:scale-95"
             >
               <Square className="w-3 h-3 fill-current" />
-              <span>{isInterrupted ? "Recuperar e Salvar" : "Encerrar reunião"}</span>
+              <span>{isInterrupted ? "Recuperar e Salvar" : "Encerrar"}</span>
             </button>
           </div>
         </div>
@@ -301,7 +342,7 @@ export function ActiveMeetingBanner() {
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Todos os trechos de áudio salvos periodicamente serão consolidados para gerar a transcrição completa e o resumo por IA na sua conta.
+              Todos os trechos de áudio salvos periodicamente no IndexedDB serão consolidados para gerar a transcrição completa e o resumo por IA na sua conta.
             </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">

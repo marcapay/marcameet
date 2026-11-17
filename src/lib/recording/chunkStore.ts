@@ -8,7 +8,13 @@ export interface RecordingChunk {
   mimeType: string;
   createdAt: number;
   retries: number;
+  lastRetryAt?: number;
+  errorMessage?: string;
+  uploaded?: boolean;
+  transcribed?: boolean;
   processed?: boolean;
+  durationSeconds?: number;
+  timestampStart?: number;
 }
 
 export interface StoredMeetingAudio {
@@ -16,6 +22,13 @@ export interface StoredMeetingAudio {
   blob: Blob;
   mimeType: string;
   updatedAt: number;
+}
+
+export interface SessionChunkStats {
+  total: number;
+  pending: number;
+  synced: number;
+  highestSequence: number;
 }
 
 const DB_NAME = 'meeting-recorder-v2';
@@ -77,7 +90,7 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 /**
- * Salva um bloco de áudio no IndexedDB em disco
+ * Salva um bloco de áudio no IndexedDB em disco com prevenção de duplicidade por ID determinístico (sessionId-sequence)
  */
 export async function saveChunk(chunk: RecordingChunk): Promise<void> {
   const db = await openDatabase();
@@ -85,8 +98,22 @@ export async function saveChunk(chunk: RecordingChunk): Promise<void> {
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(STORE_NAME, 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
+    const getReq = store.get(chunk.id);
 
-    store.put(chunk);
+    getReq.onsuccess = () => {
+      const existing = getReq.result as RecordingChunk | undefined;
+      if (existing && existing.processed) {
+        // Prevenção de duplicidade: se o segmento já foi processado, não sobrescrever seu status
+        return;
+      }
+      store.put({
+        ...existing,
+        ...chunk,
+        uploaded: existing?.uploaded ?? chunk.uploaded ?? false,
+        transcribed: existing?.transcribed ?? chunk.transcribed ?? false,
+        processed: existing?.processed ?? chunk.processed ?? false,
+      });
+    };
 
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
@@ -94,9 +121,41 @@ export async function saveChunk(chunk: RecordingChunk): Promise<void> {
 }
 
 /**
- * Marca um bloco de áudio como processado na fila sem apagar o Blob (para permitir montar o áudio completo no final)
+ * Incrementa a contagem de tentativas de reenvio (retries) de um segmento no IndexedDB
  */
-export async function markChunkProcessed(id: string): Promise<void> {
+export async function incrementChunkRetry(id: string, errorMessage?: string): Promise<number> {
+  const db = await openDatabase();
+
+  return new Promise((resolve, reject) => {
+    let nextRetries = 1;
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const getReq = store.get(id);
+
+    getReq.onsuccess = () => {
+      const data = getReq.result as RecordingChunk | undefined;
+      if (data) {
+        nextRetries = (data.retries || 0) + 1;
+        data.retries = nextRetries;
+        data.lastRetryAt = Date.now();
+        if (errorMessage) data.errorMessage = errorMessage;
+        store.put(data);
+      }
+    };
+
+    transaction.oncomplete = () => resolve(nextRetries);
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+/**
+ * Marca um bloco de áudio como processado e sincronizado na fila sem apagar o Blob
+ * (para permitir montar o áudio completo no final e recuperar após interrupções)
+ */
+export async function markChunkProcessed(
+  id: string,
+  flags?: { uploaded?: boolean; transcribed?: boolean }
+): Promise<void> {
   const db = await openDatabase();
 
   return new Promise((resolve, reject) => {
@@ -107,7 +166,38 @@ export async function markChunkProcessed(id: string): Promise<void> {
     getReq.onsuccess = () => {
       const data = getReq.result as RecordingChunk | undefined;
       if (data) {
+        if (flags?.uploaded !== undefined) data.uploaded = flags.uploaded;
+        if (flags?.transcribed !== undefined) data.transcribed = flags.transcribed;
         data.processed = true;
+        data.errorMessage = undefined;
+        store.put(data);
+      }
+    };
+
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+/**
+ * Atualiza flags parciais de upload/transcrição de um segmento (prevenção de duplicidade em retries)
+ */
+export async function updateChunkFlags(
+  id: string,
+  flags: { uploaded?: boolean; transcribed?: boolean }
+): Promise<void> {
+  const db = await openDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const getReq = store.get(id);
+
+    getReq.onsuccess = () => {
+      const data = getReq.result as RecordingChunk | undefined;
+      if (data) {
+        if (flags.uploaded !== undefined) data.uploaded = flags.uploaded;
+        if (flags.transcribed !== undefined) data.transcribed = flags.transcribed;
         store.put(data);
       }
     };
@@ -188,6 +278,38 @@ export async function getAllSessionChunksOrdered(sessionId: string): Promise<Rec
 
     request.onerror = () => reject(request.error);
   });
+}
+
+/**
+ * Obtém estatísticas completas dos segmentos de uma sessão no IndexedDB (total, pendentes de sync, sincronizados e maior sequência)
+ */
+export async function getSessionChunkStats(sessionId: string): Promise<SessionChunkStats> {
+  try {
+    const chunks = await getAllSessionChunksOrdered(sessionId);
+    let pending = 0;
+    let synced = 0;
+    let highestSequence = 0;
+
+    for (const c of chunks) {
+      if (c.sequence > highestSequence) {
+        highestSequence = c.sequence;
+      }
+      if (c.processed) {
+        synced += 1;
+      } else {
+        pending += 1;
+      }
+    }
+
+    return {
+      total: chunks.length,
+      pending,
+      synced,
+      highestSequence,
+    };
+  } catch {
+    return { total: 0, pending: 0, synced: 0, highestSequence: 0 };
+  }
 }
 
 /**

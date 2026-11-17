@@ -239,3 +239,95 @@ export function isBackgroundModeEnabled(): boolean {
   if (typeof window === "undefined") return false;
   return localStorage.getItem("marcameet_bg_mode") === "enabled";
 }
+
+/**
+ * Atualiza a MediaSession API e o título da aba nos navegadores suportados (Chrome, Edge, Safari)
+ * para auxiliar o gerenciamento de sessão ativa em segundo plano e informar o status real.
+ */
+let originalDocumentTitle: string | null = null;
+
+export function updateBrowserBackgroundSessionIndicator(params: {
+  title: string;
+  visualState: "recording" | "paused" | "interrupted" | "syncing" | "saved" | "idle";
+  elapsedFormatted?: string;
+  onPause?: () => void;
+  onResume?: () => void;
+}): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+
+  if (originalDocumentTitle === null) {
+    originalDocumentTitle = document.title || "Marca Meet — Inteligência de Reuniões";
+  }
+
+  const timePrefix = params.elapsedFormatted ? `(${params.elapsedFormatted}) ` : "";
+  switch (params.visualState) {
+    case "recording":
+      document.title = `🔴 ${timePrefix}Gravando — ${params.title}`;
+      break;
+    case "paused":
+      document.title = `⏸️ ${timePrefix}Pausado — ${params.title}`;
+      break;
+    case "interrupted":
+      document.title = `⚠️ Captura interrompida — ${params.title}`;
+      break;
+    case "syncing":
+      document.title = `☁️ Sincronizando áudio — ${params.title}`;
+      break;
+    case "saved":
+      document.title = `✅ Gravação salva — ${params.title}`;
+      break;
+    default:
+      if (originalDocumentTitle) {
+        document.title = originalDocumentTitle;
+      }
+      break;
+  }
+
+  if (typeof navigator !== "undefined" && "mediaSession" in navigator && typeof MediaMetadata !== "undefined") {
+    try {
+      const statusSubtitle =
+        params.visualState === "recording"
+          ? "🔴 Gravando em andamento"
+          : params.visualState === "paused"
+          ? "⏸️ Gravação pausada"
+          : params.visualState === "interrupted"
+          ? "⚠️ Captura interrompida"
+          : params.visualState === "syncing"
+          ? "☁️ Sincronizando áudio"
+          : "✅ Gravação salva";
+
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: params.title || "Reunião Presencial",
+        artist: statusSubtitle,
+        album: "Marca Meet",
+      });
+
+      navigator.mediaSession.playbackState =
+        params.visualState === "recording"
+          ? "playing"
+          : params.visualState === "paused" || params.visualState === "interrupted"
+          ? "paused"
+          : "none";
+
+      if (params.onPause) {
+        navigator.mediaSession.setActionHandler("pause", params.onPause);
+      }
+      if (params.onResume) {
+        navigator.mediaSession.setActionHandler("play", params.onResume);
+      }
+    } catch {}
+  }
+}
+
+export function clearBrowserBackgroundSessionIndicator(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  if (originalDocumentTitle) {
+    document.title = originalDocumentTitle;
+  }
+  if (typeof navigator !== "undefined" && "mediaSession" in navigator) {
+    try {
+      navigator.mediaSession.playbackState = "none";
+      navigator.mediaSession.metadata = null;
+    } catch {}
+  }
+}

@@ -17,6 +17,14 @@ function TimerComponent({ className = "", fallbackText = "00:00" }: RecordingTim
     let lastSec = recordingEngine.getElapsedSeconds();
     setSeconds(lastSec);
 
+    const syncClockNow = () => {
+      const currentSec = recordingEngine.getElapsedSeconds();
+      if (currentSec !== lastSec) {
+        lastSec = currentSec;
+        setSeconds(currentSec);
+      }
+    };
+
     const unsubscribe = recordingEngine.subscribe({
       onTimerTick: (sec) => {
         if (sec !== lastSec) {
@@ -24,10 +32,39 @@ function TimerComponent({ className = "", fallbackText = "00:00" }: RecordingTim
           setSeconds(sec);
         }
       },
+      onStatusChange: () => {
+        syncClockNow();
+      },
+      onChunkCaptured: () => {
+        syncClockNow();
+      },
     });
+
+    const handleVisibilityOrFocus = () => {
+      syncClockNow();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    window.addEventListener("pageshow", handleVisibilityOrFocus);
+
+    let rafId: number | null = null;
+    const rafLoop = () => {
+      if (document.visibilityState === "visible" && recordingEngine.isRecordingActive()) {
+        syncClockNow();
+      }
+      rafId = requestAnimationFrame(rafLoop);
+    };
+    rafId = requestAnimationFrame(rafLoop);
 
     return () => {
       unsubscribe();
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      window.removeEventListener("pageshow", handleVisibilityOrFocus);
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
     };
   }, []);
 
