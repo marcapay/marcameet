@@ -1,3 +1,4 @@
+import { fetchOpenAI } from "./openaiHealth";
 import { ExtractionResponse, TranscriptionResponse } from "./types";
 import { SYSTEM_MEETING_ANALYSIS_PROMPT } from "./prompts";
 import { getStoredKey } from "@/lib/storage/keysStorage";
@@ -56,7 +57,7 @@ REGRAS ESTRITAS:
     if (openaiKey) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      const res = await fetchOpenAI("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -200,7 +201,7 @@ export async function processAudioTranscription(
       formData.append("temperature", "0");
       formData.append("prompt", WHISPER_PT_PROMPT);
 
-      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      const res = await fetchOpenAI("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${openaiKey}`,
@@ -384,7 +385,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
       formData.append("response_format", "verbose_json");
       formData.append("language", "pt");
 
-      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      const res = await fetchOpenAI("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${openaiKey}`,
@@ -504,7 +505,7 @@ export async function processAIAnalysis(transcriptText: string, segments: any[] 
   // 2. Tentar OpenAI Chat Completion se houver openaiKey
   if (openaiKey) {
     try {
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      const res = await fetchOpenAI("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -689,7 +690,8 @@ ${formattedSegments || details.transcript?.raw_text || "Nenhuma transcrição gr
         { role: "user", content: userQuestion },
       ];
 
-      const res = await fetch(provider.url, {
+      const request = provider.url.startsWith("https://api.openai.com/") ? fetchOpenAI : fetch;
+      const res = await request(provider.url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -750,7 +752,7 @@ export async function askMeetingMaterialsWithOpenAI(
   const { openaiKey } = getActiveApiKeys();
   if (!openaiKey) throw new Error("Configure a chave OpenAI em Minha Conta para analisar os anexos.");
   const materials = (details.support_materials ?? []).map(({ name, text }) => ({ name, text }));
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetchOpenAI("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
     signal: AbortSignal.timeout(30000),

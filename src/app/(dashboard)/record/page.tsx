@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import {
   Mic,
   Paperclip,
@@ -10,7 +9,6 @@ import {
   Pause,
   Play,
   Sparkles,
-  KeyRound,
   AlertTriangle,
   RefreshCw,
   Smartphone,
@@ -21,7 +19,7 @@ import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay"
 import { RecordingGuidance } from "@/components/audio/RecordingGuidance";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
-import { processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
+import { processAIAnalysis } from "@/lib/ai";
 import {
   CompleteMeetingDetails,
   ActiveMeetingEngineStatus,
@@ -76,11 +74,8 @@ export default function RecordPage() {
   // Modais de Confirmação
   const [showConfirmFinishModal, setShowConfirmFinishModal] = useState(false);
 
-  // Verificação da API Key Obrigatória
-  const [apiKeyMissing, setApiKeyMissing] = useState(false);
 
   useEffect(() => {
-    setApiKeyMissing(!hasConfiguredApiKey());
 
     const syncFromEngine = () => {
       const session = recordingEngine.getActiveSession();
@@ -540,29 +535,6 @@ export default function RecordPage() {
               </li>
             ))}
           </ul>
-        </div>
-      )}
-
-      {/* Alerta de API Key Obrigatória Faltando */}
-      {apiKeyMissing && (
-        <div className="p-5 rounded-3xl bg-rose-950/60 border border-rose-500/40 text-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl">
-          <div className="flex items-center gap-3">
-            <AlertTriangle className="w-6 h-6 text-rose-400 shrink-0" />
-            <div>
-              <h3 className="font-bold text-sm text-rose-200">API Key Obrigatória Faltando</h3>
-              <p className="text-xs text-rose-300/80">
-                O sistema exige o cadastro de uma Chave de API (OpenAI, Gemini ou Groq) para transcrever e analisar reuniões. Mesmo sem a chave agora, o áudio bruto é salvo integralmente no IndexedDB.
-              </p>
-            </div>
-          </div>
-
-          <Link
-            href="/account"
-            className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs shadow-lg shadow-rose-600/30 transition-all shrink-0 flex items-center gap-1.5"
-          >
-            <KeyRound className="w-4 h-4" />
-            <span>CADASTRAR API KEY</span>
-          </Link>
         </div>
       )}
 

@@ -1,3 +1,4 @@
+import { fetchOpenAI } from "@/lib/ai/openaiHealth";
 import { getActiveApiKeys } from "@/lib/ai";
 import { getMeetingAudioBlob } from "./chunkStore";
 import type { CompleteMeetingDetails, Transcript } from "@/types/database";
@@ -70,7 +71,7 @@ export async function transcribeRecordedAudio(
     form.append("language", "pt");
     form.append("response_format", "verbose_json");
     form.append("temperature", "0");
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    const response = await fetchOpenAI("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${openaiKey}` },
       body: form,

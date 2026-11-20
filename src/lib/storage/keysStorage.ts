@@ -3,6 +3,8 @@
  * Garante que as chaves de API e configurações de banco fiquem salvas para sempre no dispositivo.
  */
 
+export const OPENAI_KEY_CHANGED = "marca-reunioes:openai-key-changed";
+
 const keysCache = new Map<string, string>();
 
 function getCookie(name: string): string | null {
@@ -70,6 +72,7 @@ export function setStoredKey(key: string, value: string): void {
   }
 
   setCookie(key, trimmed);
+  if (key === "ai_openai_key") window.dispatchEvent(new Event(OPENAI_KEY_CHANGED));
 }
 
 export function removeStoredKey(key: string): void {
@@ -86,5 +89,6 @@ export function removeStoredKey(key: string): void {
   if (typeof document !== "undefined") {
     document.cookie = `${key}=; path=/; max-age=0; SameSite=Lax`;
   }
+  if (key === "ai_openai_key") window.dispatchEvent(new Event(OPENAI_KEY_CHANGED));
 }
 
