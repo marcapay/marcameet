@@ -109,6 +109,10 @@ function getLocalAccountsRegistry(): Record<string, UserAccount> {
   return {};
 }
 
+export function hasKnownDeviceAccounts(): boolean {
+  return Object.keys(getLocalAccountsRegistry()).length > 0;
+}
+
 function saveToLocalAccountsRegistry(account: UserAccount) {
   if (typeof window === "undefined" || !account?.email) return;
   try {
