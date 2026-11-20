@@ -25,6 +25,7 @@ import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, delet
 import { CompleteMeetingDetails } from "@/types/database";
 import { MeetingBoards } from "@/components/meetings/MeetingBoards";
 import { MeetingMaterials } from "@/components/meetings/MeetingMaterials";
+import { MeetingAccess } from "@/components/meetings/MeetingAccess";
 import { MeetingChat } from "@/components/meetings/MeetingChat";
 import { ensureValidUuid } from "@/lib/supabase/client";
 import Link from "next/link";
@@ -228,7 +229,10 @@ export default function MeetingDetailPage() {
             onClick={async () => {
               if (confirm(`Tem certeza que deseja excluir a reunião "${meeting.title}"?`)) {
                 const completed = await deleteLocalMeeting(meeting.id);
-                if (!completed) alert("A exclusão foi iniciada neste aparelho. A sincronização será tentada novamente.");
+                if (!completed) {
+                  alert("Não foi possível excluir. Se houver uma versão compartilhada, entre com o e-mail verificado do proprietário e tente novamente.");
+                  return;
+                }
                 router.push("/meetings");
               }
             }}
@@ -299,6 +303,8 @@ export default function MeetingDetailPage() {
           <span className="truncate">Exportar</span>
         </button>
       </div>
+
+      <MeetingAccess key={meeting.id} details={details} />
 
       {/* TAB 1: VISÃO GERAL E ANÁLISE POR IA */}
       {activeTab === "summary" && (

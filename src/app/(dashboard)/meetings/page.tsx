@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useDeferredValue, useMemo } from "react";
 import Link from "next/link";
+import { SharedMeetingList } from "@/components/meetings/SharedMeetingList";
 import { Search, Filter, Video, Mic, Upload, FileText, Calendar, Clock, ArrowRight, Tag, RefreshCw, Trash2, Edit2 } from "lucide-react";
 import { getLocalMeetings, deleteLocalMeeting, updateMeetingTitle, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails, MeetingStatus } from "@/types/database";
@@ -30,7 +31,7 @@ export default function MeetingsPage() {
     e.stopPropagation();
     if (confirm(`Tem certeza que deseja excluir a reunião "${title}"?`)) {
       const completed = await deleteLocalMeeting(meetingId);
-      if (!completed) alert("A exclusão foi iniciada neste aparelho. A sincronização será tentada novamente.");
+      if (!completed) alert("Não foi possível concluir a exclusão. Se houver uma versão compartilhada, entre com o e-mail verificado do proprietário e tente novamente.");
       reloadMeetings();
     }
   };
@@ -106,6 +107,7 @@ export default function MeetingsPage() {
 
   return (
     <div className="space-y-6 animate-fadeIn">
+      <SharedMeetingList query={deferredSearchQuery} />
       {/* Header da Página */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

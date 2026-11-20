@@ -24,14 +24,17 @@ interface MeetingChatProps {
   executive?: boolean;
   voiceComposer?: boolean;
   openMaterials?: boolean;
+  persistHistory?: boolean;
+  beforeSend?: () => Promise<void>;
   onTimestamp?: (seconds: number) => void;
 }
 
-function Conversation({ details, executive, voiceComposer, openMaterials, onTimestamp }: MeetingChatProps) {
+function Conversation({ details, executive, voiceComposer, openMaterials, persistHistory = true, beforeSend, onTimestamp }: MeetingChatProps) {
   const [consultMaterials, setConsultMaterials] = useState(Boolean(openMaterials));
   const [question, setQuestion] = useState("");
   const historyKey = `marca-reunioes-chat-v1:${details.meeting.user_id}:${details.meeting.id}`;
   const [messages, setMessages] = useState<MeetingChatMessage[]>(() => {
+    if (!persistHistory) return [];
     try {
       const saved = JSON.parse(localStorage.getItem(historyKey) || "[]");
       return Array.isArray(saved) ? saved.filter((item) =>
@@ -69,6 +72,7 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
     const message: MeetingChatMessage = { id: timestamp, role: "user", content, timestamp, scope };
     setMessages([...messages, message]);
     try {
+      await beforeSend?.();
       const answer = consultMaterials
         ? await askMeetingMaterialsWithOpenAI(details, content, messages)
         : await askMeetingAI(details, content, messages.filter((message) => message.scope !== "materials").slice(-20));
@@ -77,7 +81,7 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
       }];
       setMessages(updated.slice(-40));
       try {
-        localStorage.setItem(historyKey, JSON.stringify(updated.slice(-40)));
+        if (persistHistory) localStorage.setItem(historyKey, JSON.stringify(updated.slice(-40)));
       } catch {
         // A conversa continua disponível enquanto a página estiver aberta.
       }

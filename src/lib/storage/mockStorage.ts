@@ -1,10 +1,5 @@
 import { CompleteMeetingDetails, UserAccount } from "@/types/database";
 import {
-  deleteMeetingFromSupabase,
-  saveMeetingToSupabase,
-  fetchMeetingsFromSupabase,
-  saveUserAccountToSupabase,
-  isSupabaseConfigured,
   ensureValidUuid,
 } from "@/lib/supabase/client";
 import {
@@ -14,14 +9,13 @@ import {
   clearActiveSessionInIndexedDB,
   requestPersistentBrowserStorage,
 } from "@/lib/storage/indexedDbQueue";
+import { removeProtectedMeeting } from "@/lib/supabase/meetingAccess";
 import { getCurrentAccount, subscribeAccountChange } from "@/lib/auth/accountSystem";
 import { clearSessionChunks, deleteMeetingAudioBlob } from "@/lib/recording/chunkStore";
-import { getStoredKey, setStoredKey } from "@/lib/storage/keysStorage";
 
 const STORAGE_KEY_MEETINGS = "marcameet_meetings_v2";
 const DELETION_PREFIX = "marcameet_deleted_meeting_";
 const deletionRecords = new Map<string, { id: string; pending: boolean; requiresSupabase?: boolean }>();
-const pendingDeletes = new Map<string, Promise<boolean>>();
 
 function rememberDeletion(id: string, pending: boolean, requiresSupabase = false) {
   const canonical = ensureValidUuid(id);
@@ -60,58 +54,6 @@ async function removeMeetingFiles(ids: Iterable<string>) {
   }));
 }
 
-async function syncMeetingDeletion(id: string): Promise<boolean> {
-  const canonical = ensureValidUuid(id);
-  const ongoing = pendingDeletes.get(canonical);
-  if (ongoing) return ongoing;
-  const request = (async () => {
-    try {
-      const configured = isSupabaseConfigured();
-      const server = fetch("/api/cloud-sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deletedMeetingId: id }),
-        signal: AbortSignal.timeout(10000),
-      });
-      const [res, cloudDeleted] = await Promise.all([
-        server.catch(() => null),
-        configured ? deleteMeetingFromSupabase(id) : Promise.resolve(true),
-      ]);
-      if (!res?.ok || !cloudDeleted) return false;
-      rememberDeletion(id, !configured, !configured);
-      return true;
-    } catch {
-      return false;
-    } finally {
-      pendingDeletes.delete(canonical);
-    }
-  })();
-  pendingDeletes.set(canonical, request);
-  return request;
-}
-
-async function retryMeetingDeletions() {
-  try {
-    for (let index = 0; index < localStorage.length; index++) {
-      const key = localStorage.key(index);
-      if (!key?.startsWith(DELETION_PREFIX)) continue;
-      const entry = JSON.parse(localStorage.getItem(key) || "null");
-      if (typeof entry?.id === "string") deletionRecords.set(ensureValidUuid(entry.id), entry);
-    }
-  } catch {}
-  await Promise.all(Array.from(deletionRecords.values())
-    .filter(({ pending, requiresSupabase }) => pending && (!requiresSupabase || isSupabaseConfigured()))
-    .map(({ id }) => syncMeetingDeletion(id)));
-}
-
-function receiveMeetingDeletions(ids: unknown) {
-  if (!Array.isArray(ids)) return;
-  for (const id of ids) {
-    if (typeof id !== "string" || isDeletedMeeting(id)) continue;
-    rememberDeletion(id, false);
-    discardCachedMeeting(id);
-  }
-}
 const getAccountStorageKey = (accountId: string) => `marcameet_meetings_acc_${accountId}`;
 
 export const INITIAL_MOCK_MEETINGS: CompleteMeetingDetails[] = [];
@@ -142,11 +84,6 @@ function isLegacyMockMeeting(m: CompleteMeetingDetails): boolean {
 
 function isAnonymousUserId(userId?: string): boolean {
   return !userId || userId === "u-001" || userId === "anonymous" || userId === "guest";
-}
-
-function withoutLocalMaterials(details: CompleteMeetingDetails): CompleteMeetingDetails {
-  const { support_materials: _localMaterials, ...syncedDetails } = details;
-  return syncedDetails;
 }
 
 function mergeMeetingEntries(a: CompleteMeetingDetails, b: CompleteMeetingDetails): CompleteMeetingDetails {
@@ -241,7 +178,7 @@ function filterMeetingsForCurrentUser(allList: CompleteMeetingDetails[], account
   const dedupedList = Array.from(dedupedMap.values());
 
   if (!account) {
-    return dedupedList.sort(
+    return dedupedList.filter(({ meeting }) => !meeting.user_email && isAnonymousUserId(meeting.user_id)).sort(
       (a, b) => new Date(b.meeting.meeting_date).getTime() - new Date(a.meeting.meeting_date).getTime()
     );
   }
@@ -253,10 +190,9 @@ function filterMeetingsForCurrentUser(allList: CompleteMeetingDetails[], account
     .filter((m) => {
       const mUserId = m.meeting.user_id;
       const mEmail = m.meeting.user_email?.trim().toLowerCase();
-      // Se não tiver e-mail de outra conta diferente, pertence à conta ativa no projeto
-      if (!mEmail || mEmail === cleanEmail) return true;
-      if (mUserId === account.id || ensureValidUuid(mUserId) === accountUuid) return true;
-      return isAnonymousUserId(mUserId);
+      if (mEmail) return mEmail === cleanEmail;
+      return Boolean(mUserId && !isAnonymousUserId(mUserId) &&
+        (mUserId === account.id || ensureValidUuid(mUserId) === accountUuid));
     })
     .sort((a, b) => new Date(b.meeting.meeting_date).getTime() - new Date(a.meeting.meeting_date).getTime());
 }
@@ -298,35 +234,6 @@ function persistMeetingsToLocalStorage(account: UserAccount | null) {
 /**
  * Adota reuniões locais sem e-mail ou com user_id antigo para a conta logada e sincroniza com IndexedDB e Nuvem
  */
-function adoptAnonymousMeetingsForAccount(account: UserAccount): boolean {
-  let adoptedAny = false;
-  const cleanEmail = account.email.trim().toLowerCase();
-
-  allMeetingsMap.forEach((item, id) => {
-    const itemEmail = item.meeting.user_email?.trim().toLowerCase();
-    if (!itemEmail || itemEmail === cleanEmail || isAnonymousUserId(item.meeting.user_id)) {
-      if (item.meeting.user_id !== account.id || itemEmail !== cleanEmail) {
-        const updated: CompleteMeetingDetails = {
-          ...item,
-          meeting: {
-            ...item.meeting,
-            user_id: account.id,
-            user_email: cleanEmail,
-          },
-        };
-        allMeetingsMap.set(id, updated);
-        saveCompletedMeetingToIndexedDB(updated).catch(() => {});
-        saveMeetingToSupabase(withoutLocalMaterials(updated)).catch(() => {});
-        adoptedAny = true;
-      }
-    }
-  });
-  return adoptedAny;
-}
-
-/**
- * Sincroniza reuniões da conta via /api/cloud-sync, IndexedDB e Supabase Cloud
- */
 export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; syncedCloud: boolean }> {
   if (typeof window === "undefined") return { totalSaved: 0, syncedCloud: false };
 
@@ -353,75 +260,6 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
       }
     } catch {}
 
-    adoptAnonymousMeetingsForAccount(account);
-  }
-
-  let syncedCloud = false;
-  await retryMeetingDeletions();
-
-  // 3. Sincronizar via /api/cloud-sync (compartilha chaves e reuniões instantaneamente entre celular e computador)
-  try {
-    const localListForSync = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
-    const res = await fetch("/api/cloud-sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        supa_url: getStoredKey("supa_url", "https://xuooojiaslhwaejsgjxh.supabase.co") || undefined,
-        supa_anon_key: getStoredKey("supa_anon_key") || undefined,
-        ai_openai_key: getStoredKey("ai_openai_key") || undefined,
-        ai_gemini_key: getStoredKey("ai_gemini_key") || undefined,
-        ai_groq_key: getStoredKey("ai_groq_key") || undefined,
-        account: account || undefined,
-        meetings: localListForSync.map(withoutLocalMaterials),
-      }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.supa_url && !getStoredKey("supa_url")) setStoredKey("supa_url", data.supa_url);
-      if (data.supa_anon_key && !getStoredKey("supa_anon_key")) setStoredKey("supa_anon_key", data.supa_anon_key);
-      if (data.ai_openai_key && !getStoredKey("ai_openai_key")) setStoredKey("ai_openai_key", data.ai_openai_key);
-      if (data.ai_gemini_key && !getStoredKey("ai_gemini_key")) setStoredKey("ai_gemini_key", data.ai_gemini_key);
-      if (data.ai_groq_key && !getStoredKey("ai_groq_key")) setStoredKey("ai_groq_key", data.ai_groq_key);
-
-      receiveMeetingDeletions(data.deletedMeetingIds);
-      if (isSupabaseConfigured()) await retryMeetingDeletions();
-      if (Array.isArray(data.meetings)) {
-        for (const m of data.meetings) {
-          upsertIntoMeetingsMap(m);
-        }
-      }
-      syncedCloud = true;
-    }
-  } catch {}
-
-  // 4. Sincronizar com Supabase se configurado
-  if (isSupabaseConfigured()) {
-    try {
-      if (account) {
-        await saveUserAccountToSupabase(account).catch(() => {});
-      }
-
-      // Primeiro enviar reuniões locais para o Supabase (com __MM_JSON__ completo)
-      const localBeforePull = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
-      await Promise.all(
-        localBeforePull.slice(0, 30).map((m) =>
-          saveMeetingToSupabase(withoutLocalMaterials(m)).catch(() => false)
-        )
-      );
-
-      // Depois buscar todas as reuniões do Supabase
-      const cloudMeetings = await fetchMeetingsFromSupabase(account?.id, account?.email);
-      cloudMeetings.forEach((cloudItem) => {
-        upsertIntoMeetingsMap(cloudItem);
-      });
-
-      syncedCloud = true;
-    } catch {}
-  }
-
-  if (account) {
-    adoptAnonymousMeetingsForAccount(account);
   }
 
   // 5. Garantir que todas as reuniões consolidadas estejam salvas no IndexedDB e localStorage
@@ -434,7 +272,7 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
 
   return {
     totalSaved: finalAccountList.length,
-    syncedCloud,
+    syncedCloud: false,
   };
 }
 
@@ -442,8 +280,7 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
 if (typeof window !== "undefined") {
   subscribeAccountChange((account) => {
     if (account) {
-      adoptAnonymousMeetingsForAccount(account);
-      persistMeetingsToLocalStorage(account);
+        persistMeetingsToLocalStorage(account);
     }
     notifyListeners();
     syncAccountMeetingsNow().catch(() => {});
@@ -501,9 +338,6 @@ export function getLocalMeetings(): CompleteMeetingDetails[] {
       }
     } catch {}
 
-    if (adoptAnonymousMeetingsForAccount(account)) {
-      persistMeetingsToLocalStorage(account);
-    }
   }
 
   // Sincronizar assincronamente com IndexedDB, /api/cloud-sync e Supabase na inicialização ou ao trocar de conta
@@ -551,32 +385,24 @@ export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecorde
     })
     .catch((err) => console.warn("Falha ao salvar a reunião ou limpar o áudio temporário:", err));
 
-  // 4. Sincronizar criação/atualização no Supabase e no /api/cloud-sync
-  saveMeetingToSupabase(withoutLocalMaterials(enrichedDetails)).catch((err) =>
-    console.warn("Falha na sincronização assíncrona com Supabase:", err)
-  );
 
-  fetch("/api/cloud-sync", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      meetings: [withoutLocalMaterials(enrichedDetails)],
-    }),
-  }).catch(() => {});
 }
 
 export async function deleteLocalMeeting(meetingId: string): Promise<boolean> {
   if (typeof window === "undefined") return false;
-  rememberDeletion(meetingId, true);
+  const selected = getLocalMeetings().find(({ meeting }) => ensureValidUuid(meeting.id) === ensureValidUuid(meetingId));
+  if (!selected || !await removeProtectedMeeting(selected).catch(() => false)) return false;
+  rememberDeletion(meetingId, false);
   const ids = discardCachedMeeting(meetingId);
   persistMeetingsToLocalStorage(getCurrentAccount());
   notifyListeners();
 
-  const [local, remote] = await Promise.allSettled([
-    removeMeetingFiles(ids),
-    syncMeetingDeletion(meetingId),
-  ]);
-  return local.status === "fulfilled" && remote.status === "fulfilled" && remote.value;
+  try {
+    await removeMeetingFiles(ids);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function updateSpeakerNameInMeeting(meetingId: string, oldSpeaker: string, newSpeaker: string): CompleteMeetingDetails | null {
@@ -678,7 +504,6 @@ export async function importMeetingsBackupJson(
       };
       upsertIntoMeetingsMap(enriched);
       await saveCompletedMeetingToIndexedDB(enriched);
-      saveMeetingToSupabase(withoutLocalMaterials(enriched)).catch(() => {});
       importedCount++;
     }
   }
