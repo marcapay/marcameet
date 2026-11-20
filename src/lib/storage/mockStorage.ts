@@ -61,8 +61,45 @@ function mergeMeetingEntries(a: CompleteMeetingDetails, b: CompleteMeetingDetail
   return bTime >= aTime ? b : a;
 }
 
-function upsertIntoMeetingsMap(item: CompleteMeetingDetails) {
-  if (!item?.meeting?.id || isLegacyMockMeeting(item)) return;
+function meetingItems<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value.filter((item) => item != null) : [];
+}
+
+function normalizeMeetingDetails(item: CompleteMeetingDetails): CompleteMeetingDetails {
+  return {
+    ...item,
+    meeting: { ...item.meeting, tags: meetingItems(item.meeting.tags) },
+    summary: item.summary
+      ? { ...item.summary, key_topics: meetingItems(item.summary.key_topics).filter((topic) => typeof topic === "string") }
+      : undefined,
+    transcript: item.transcript ? {
+      ...item.transcript,
+      speaker_map: Object.fromEntries(Object.entries(item.transcript.speaker_map || {})
+        .filter(([, name]) => typeof name === "string")),
+      segments: meetingItems(item.transcript.segments)
+        .filter((segment) => typeof segment.text === "string")
+        .map((segment) => ({
+          ...segment,
+          speaker: typeof segment.speaker === "string" ? segment.speaker : "Falante não identificado",
+        })),
+    } : undefined,
+    decisions: meetingItems(item.decisions),
+    highlights: meetingItems(item.highlights),
+    tasks: meetingItems(item.tasks),
+    pending_items: meetingItems(item.pending_items),
+    risks: meetingItems(item.risks),
+    opportunities: meetingItems(item.opportunities),
+    values: meetingItems(item.values),
+    dates: meetingItems(item.dates),
+    quotes: meetingItems(item.quotes),
+    next_steps_agreed: meetingItems(item.next_steps_agreed),
+    next_steps_ai_suggestions: meetingItems(item.next_steps_ai_suggestions),
+  };
+}
+
+function upsertIntoMeetingsMap(input: CompleteMeetingDetails) {
+  if (!input?.meeting?.id || isLegacyMockMeeting(input)) return;
+  const item = normalizeMeetingDetails(input);
   const canonicalUuid = ensureValidUuid(item.meeting.id);
 
   // Verificar se já existe com o mesmo ID ou mesmo UUID canônico

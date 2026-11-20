@@ -1162,7 +1162,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                         {formatTimestamp(seg.start_time)}
                       </span>
                       <span className="font-bold text-slate-200 text-xs">
-                        {selectedMeeting.transcript?.speaker_map[seg.speaker] || seg.speaker}
+                        {selectedMeeting.transcript?.speaker_map?.[seg.speaker] || seg.speaker}
                       </span>
                     </div>
 
