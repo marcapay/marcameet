@@ -24,10 +24,12 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: 
   onListening?: (listening: boolean) => void;
 }) {
   const current = useRef<Recognition | null>(null);
+  const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [listening, setListening] = useState(false);
   const [status, setStatus] = useState("");
 
   useEffect(() => () => {
+    if (stopTimer.current) clearTimeout(stopTimer.current);
     const recognition = current.current;
     current.current = null;
     recognition?.abort();
@@ -35,7 +37,18 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: 
 
   function toggle() {
     if (current.current) {
-      current.current.stop();
+      if (stopTimer.current) return;
+      const active = current.current;
+      stopTimer.current = setTimeout(() => {
+        active.onend?.();
+        active.abort();
+      }, 2000);
+      try {
+        active.stop();
+      } catch {
+        active.onend?.();
+        active.abort();
+      }
       return;
     }
     const browser = window as Window & {
@@ -50,6 +63,8 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: 
     const recognition = new Recognizer();
     const finish = () => {
       if (current.current !== recognition) return;
+      if (stopTimer.current) clearTimeout(stopTimer.current);
+      stopTimer.current = null;
       current.current = null;
       setListening(false);
       onListening?.(false);
@@ -57,13 +72,13 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: 
     let captured = "";
     recognition.lang = "pt-BR";
     recognition.continuous = sendOnEnd;
-    recognition.interimResults = !sendOnEnd;
+    recognition.interimResults = true;
     recognition.onresult = ({ results }) => {
       if (current.current !== recognition) return;
       const text = Array.from(results, (result) => result[0]?.transcript || "").join(" ").trim();
       if (!text) return;
       captured = text;
-      if (!sendOnEnd) setStatus(`Ouvindo… ${text}`);
+      setStatus(`Ouvindo… ${text}`);
     };
     recognition.onend = () => {
       if (current.current !== recognition) return;
@@ -77,7 +92,7 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: 
     };
     recognition.onerror = (event) => {
       if (current.current !== recognition) return;
-      if (!sendOnEnd && event?.error === "no-speech" && captured) {
+      if (event?.error === "no-speech" && captured) {
         recognition.onend?.();
         return;
       }
