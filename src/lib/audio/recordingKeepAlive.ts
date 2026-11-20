@@ -117,7 +117,7 @@ export async function requestScreenWakeLock(): Promise<WakeLockStateInfo> {
   if (typeof document !== "undefined" && document.visibilityState !== "visible") {
     const waitingInfo: WakeLockStateInfo = {
       status: "released",
-      message: "A página está em segundo plano. Volte para a página para manter a tela ativa e garantir a gravação.",
+      message: "A tela só pode ser mantida ligada enquanto esta página estiver visível.",
       isSupported: true,
     };
     updateWakeLockState(waitingInfo);

@@ -346,6 +346,10 @@ class RecordingEngineService {
       return false;
     }
 
+    if (this.activeSession.source_status === "muted" && this.activeSession.auto_paused_reason === "mic_mute") {
+      this.resumeRecording();
+    }
+
     // Se o gravador deveria estar gravando mas ficou inativo inesperadamente
     if (
       this.activeSession.recorder_status === "recording" &&
@@ -414,7 +418,7 @@ class RecordingEngineService {
         // Se está gravando ativamente, faz flush preventivo do buffer atual para o IndexedDB
         // mas MANTÉM o MediaRecorder gravando continuamente em segundo plano!
         if (this.mediaRecorder && this.mediaRecorder.state === "recording") {
-          this.activeSession.status = "background";
+          if (this.activeSession.source_status === "active") this.activeSession.status = "background";
           try {
             this.mediaRecorder.requestData();
           } catch {}
@@ -546,7 +550,7 @@ class RecordingEngineService {
             session.source_status = "interrupted";
             session.recorder_status = "paused";
             if (!session.paused_at_ms) {
-              session.paused_at_ms = Date.now();
+              session.paused_at_ms = session.last_chunk_at_ms || Date.now();
             }
             this.openInterruptionGap(
               "page_reloaded",
@@ -714,7 +718,7 @@ class RecordingEngineService {
 
       track.onmute = () => {
         console.warn("⚠️ [RecordingEngine] AudioTrack silenciada (mute) pelo sistema operacional.");
-        if (!this.activeSession || this.activeSession.status === "finished") return;
+        if (!this.activeSession || this.activeSession.status === "finished" || this.activeSession.status === "finishing") return;
 
         this.activeSession.source_status = "muted";
         this.activeSession.status = "interrupted";
@@ -734,7 +738,7 @@ class RecordingEngineService {
 
       track.onunmute = () => {
         console.log("🔊 [RecordingEngine] AudioTrack restaurada (unmute) pelo sistema operacional.");
-        if (!this.activeSession || this.activeSession.status === "finished") return;
+        if (!this.activeSession || this.activeSession.status === "finished" || this.activeSession.status === "finishing") return;
 
         this.closeOpenInterruptionGaps();
         this.activeSession.source_status = "active";
@@ -824,36 +828,7 @@ class RecordingEngineService {
     if (!this.activeSession) return;
 
     const nowMs = Date.now();
-    const prevChunkMs = this.activeSession.last_chunk_at_ms || this.activeSession.started_at_ms;
-
-    // Se houve um salto anormal de tempo entre dois chunks (> 16s) sem pausa manual,
-    // significa que o SO congelou o processo em segundo plano por alguns segundos!
-    if (
-      this.activeSession.recorder_status === "recording" &&
-      nowMs - prevChunkMs > OS_SUSPENSION_GAP_THRESHOLD_MS + 3000
-    ) {
-      const suspendedDurationMs = Math.max(0, nowMs - prevChunkMs - CHUNK_DURATION_MS);
-      const suspendedSec = Math.round(suspendedDurationMs / 1000);
-      if (suspendedSec >= 10) {
-        if (!this.activeSession.interruption_gaps) {
-          this.activeSession.interruption_gaps = [];
-        }
-        this.activeSession.interruption_gaps.push({
-          id: `gap_os_${prevChunkMs}`,
-          started_at: new Date(prevChunkMs + CHUNK_DURATION_MS).toISOString(),
-          started_at_ms: prevChunkMs + CHUNK_DURATION_MS,
-          ended_at: new Date(nowMs).toISOString(),
-          ended_at_ms: nowMs,
-          duration_seconds: suspendedSec,
-          reason: "os_suspended",
-          message: `O sistema operacional suspendeu a captura em segundo plano por cerca de ${suspendedSec}s.`,
-        });
-        // Descontar o tempo em que o SO esteve congelado para não afirmar que capturou áudio nesse intervalo
-        this.activeSession.accumulated_paused_ms =
-          (this.activeSession.accumulated_paused_ms || 0) + suspendedDurationMs;
-      }
-    }
-
+    // The browser can delay delivery of chunks while continuing to capture.
     this.sequenceNumber += 1;
     const currentSeq = this.sequenceNumber;
     const sessionId = this.activeSession.meeting_id;
@@ -1181,13 +1156,14 @@ class RecordingEngineService {
     if (this.activeSession && this.activeSession.recorder_status === "paused") {
       // Verificar se a trilha de áudio ainda está viva antes de retomar
       const tracks = this.mediaStream ? this.mediaStream.getAudioTracks() : [];
-      const hasLiveTrack = tracks.length > 0 && tracks.some((t) => t.readyState === "live");
+      const hasLiveTrack = tracks.some((t) => t.readyState === "live");
+      if (hasLiveTrack && tracks.every((t) => t.muted)) return;
       if (!hasLiveTrack || !this.mediaRecorder || this.mediaRecorder.state === "inactive") {
         this.handleSourceEnded("A trilha do microfone foi encerrada pelo sistema. Clique em 'Reconectar áudio' para continuar.");
         return;
       }
 
-      if (this.mediaRecorder && this.mediaRecorder.state === "paused") {
+      if (this.mediaRecorder.state === "paused" || this.activeSession.auto_paused_reason === "mic_mute") {
         try {
           this.mediaRecorder.resume();
         } catch (e) {

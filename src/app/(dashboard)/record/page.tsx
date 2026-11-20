@@ -16,10 +16,6 @@ import {
   Smartphone,
   Cloud,
   CheckCircle2,
-  ShieldCheck,
-  ChevronDown,
-  ChevronUp,
-  Activity,
 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
@@ -32,31 +28,13 @@ import {
   VisualRecordingState,
 } from "@/types/database";
 import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
-import { recordingEngine, getSupportedMimeType } from "@/lib/audio/recordingEngine";
+import { recordingEngine } from "@/lib/audio/recordingEngine";
 import {
   getUploaderState,
   subscribeUploaderState,
   UploaderSyncState,
 } from "@/lib/recording/chunkUploader";
-import {
-  saveChunk,
-  getAllSessionChunksOrdered,
-  clearSessionChunks,
-  getSessionChunkStats,
-} from "@/lib/recording/chunkStore";
 import { generateUuid, getCurrentAccount } from "@/lib/auth/accountSystem";
-
-interface DiagnosticReport {
-  ranAt: string;
-  mimeType: string;
-  indexedDb30MinPass: boolean;
-  indexedDb60MinPass: boolean;
-  deduplicationPass: boolean;
-  visibilityContinuityPass: boolean;
-  timerSyncPass: boolean;
-  offlineRecoveryPass: boolean;
-  details: string[];
-}
 
 export default function RecordPage() {
   const router = useRouter();
@@ -90,11 +68,6 @@ export default function RecordPage() {
   const [syncInfo, setSyncInfo] = useState<UploaderSyncState>(getUploaderState());
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
   const [recordingSavedBanner, setRecordingSavedBanner] = useState(false);
-
-  // Painel de Diagnóstico e Matriz de Testes (30 e 60 min)
-  const [showCompatibilityMatrix, setShowCompatibilityMatrix] = useState(false);
-  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
-  const [diagnosticReport, setDiagnosticReport] = useState<DiagnosticReport | null>(null);
 
   // Modais de Confirmação
   const [showConfirmFinishModal, setShowConfirmFinishModal] = useState(false);
@@ -264,120 +237,6 @@ export default function RecordPage() {
   };
 
   // Executar Bateria Automatizada de Testes Obrigatórios (Simulação de 30 e 60 min + Deduplicação + Recovery)
-  const runAutomatedResilienceTests = async () => {
-    setIsRunningDiagnostics(true);
-    const logs: string[] = [];
-    const testSession30 = `test_30m_${Date.now()}`;
-    const testSession60 = `test_60m_${Date.now()}`;
-
-    try {
-      const mimeType = getSupportedMimeType() || "audio/webm";
-      logs.push(`Codec detectado no navegador: ${mimeType}`);
-
-      // 1. Teste de Sessão de 30 minutos (360 segmentos de 5s) + Prevenção de Duplicidade
-      const samplePayload = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3, 4, 5, 6, 7, 8]);
-      const sampleBlob = new Blob([samplePayload], { type: mimeType });
-
-      for (let seq = 1; seq <= 36; seq++) {
-        // Testar lote representativo de 30 min (escala 1:10 + validação de sequência 360)
-        const mappedSeq = seq === 36 ? 360 : seq;
-        await saveChunk({
-          id: `${testSession30}-${mappedSeq}`,
-          sessionId: testSession30,
-          sequence: mappedSeq,
-          blob: sampleBlob,
-          mimeType,
-          createdAt: Date.now() + seq,
-          retries: 0,
-          processed: seq <= 18,
-          uploaded: seq <= 18,
-        });
-      }
-
-      // Tentativa de escrita duplicada no segmento #1 (já processado) para validar proteção contra duplicidade
-      await saveChunk({
-        id: `${testSession30}-1`,
-        sessionId: testSession30,
-        sequence: 1,
-        blob: sampleBlob,
-        mimeType,
-        createdAt: Date.now() + 999,
-        retries: 0,
-        processed: false,
-      });
-
-      const stats30 = await getSessionChunkStats(testSession30);
-      const ordered30 = await getAllSessionChunksOrdered(testSession30);
-      const chunk1 = ordered30.find((c) => c.sequence === 1);
-      const deduplicationPass = Boolean(chunk1?.processed === true && stats30.total === 36);
-      const indexedDb30MinPass = stats30.highestSequence === 360 && stats30.synced === 18 && stats30.pending === 18;
-      logs.push(
-        `Sessão 30 min (seq máx 360): ${stats30.total} segmentos persistidos no IndexedDB, deduplicação=${
-          deduplicationPass ? "OK" : "FALHA"
-        }`
-      );
-
-      // 2. Teste de Sessão de 60 minutos (720 segmentos de 5s) + Recuperação pós-interrupção
-      for (let seq = 1; seq <= 72; seq++) {
-        const mappedSeq = seq === 72 ? 720 : seq * 10;
-        await saveChunk({
-          id: `${testSession60}-${mappedSeq}`,
-          sessionId: testSession60,
-          sequence: mappedSeq,
-          blob: sampleBlob,
-          mimeType,
-          createdAt: Date.now() + seq,
-          retries: seq % 5 === 0 ? 2 : 0,
-          processed: true,
-          uploaded: true,
-        });
-      }
-      const stats60 = await getSessionChunkStats(testSession60);
-      const indexedDb60MinPass = stats60.highestSequence === 720 && stats60.total === 72;
-      logs.push(
-        `Sessão 60 min (seq máx 720): recuperação ordenada de ${stats60.total} segmentos sem vazamento de RAM`
-      );
-
-      // Limpar dados de teste do IndexedDB
-      await clearSessionChunks(testSession30);
-      await clearSessionChunks(testSession60);
-
-      // 3. Verificar sincronismo do cronômetro por timestamp real (Date.now() vs setInterval)
-      const t0 = Date.now() - 3600 * 1000; // 60 min atrás
-      const pausedMs = 300 * 1000; // 5 min pausados
-      const expectedSec = Math.floor((Date.now() - t0 - pausedMs) / 1000);
-      const timerSyncPass = expectedSec === 3300;
-      logs.push(`Cronômetro monotônico (60m com 5m de pausa): ${expectedSec}s exatos (independente de setInterval)`);
-
-      setDiagnosticReport({
-        ranAt: new Date().toLocaleTimeString("pt-BR"),
-        mimeType,
-        indexedDb30MinPass,
-        indexedDb60MinPass,
-        deduplicationPass,
-        visibilityContinuityPass: true,
-        timerSyncPass,
-        offlineRecoveryPass: true,
-        details: logs,
-      });
-    } catch (err: any) {
-      logs.push(`Erro durante diagnóstico: ${err?.message || err}`);
-      setDiagnosticReport({
-        ranAt: new Date().toLocaleTimeString("pt-BR"),
-        mimeType: "desconhecido",
-        indexedDb30MinPass: false,
-        indexedDb60MinPass: false,
-        deduplicationPass: false,
-        visibilityContinuityPass: true,
-        timerSyncPass: true,
-        offlineRecoveryPass: false,
-        details: logs,
-      });
-    } finally {
-      setIsRunningDiagnostics(false);
-    }
-  };
-
   // Executar Encerramento Definitivo com finishMeeting() Centralizado
   const handleConfirmFinishMeeting = async () => {
     setShowConfirmFinishModal(false);
@@ -593,7 +452,7 @@ export default function RecordPage() {
             <span>Gravação Presencial</span>
           </h1>
           <p className="text-xs text-slate-400">
-            Grave conversas ao vivo em segundo plano ao trocar de aba ou navegar pelo sistema, com proteção em segmentos no IndexedDB.
+            Você pode trocar de aba enquanto o navegador mantiver o microfone disponível.
           </p>
         </div>
 
@@ -639,7 +498,7 @@ export default function RecordPage() {
               <h3 className="font-bold text-sm text-amber-200">⚠️ Captura interrompida pelo sistema ou navegador</h3>
               <p className="text-xs text-amber-300/90 leading-relaxed">
                 O sistema operacional ou navegador suspendeu o acesso ao microfone (comum ao bloquear a tela no celular ou receber uma ligação). Não capturamos áudio enquanto o microfone esteve suspenso, mas todos os{" "}
-                <strong>{totalChunksSaved} segmentos</strong> anteriores estão 100% salvos no IndexedDB.
+                <strong>{savedChunksCount} segmentos</strong> já foram salvos neste aparelho.
               </p>
             </div>
           </div>
@@ -745,7 +604,7 @@ export default function RecordPage() {
                 INICIAR GRAVAÇÃO
               </button>
               <p className="text-[11px] text-slate-400">
-                Toque no botão para iniciar a gravação contínua. Você pode trocar de aba ou navegar por outras páginas do sistema sem encerrar a sessão.
+                Mantenha esta aba aberta. Se o microfone for suspenso, volte aqui para verificar a gravação.
               </p>
             </div>
           </div>
@@ -755,11 +614,13 @@ export default function RecordPage() {
             <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
               <div className="flex items-center gap-2">
                 <Smartphone className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-bold text-slate-200">Manter tela ativa durante a gravação</h2>
+                <h2 className="text-sm font-bold text-slate-200">Evitar que a tela apague</h2>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
+                  aria-label="Evitar que a tela apague"
+                  aria-describedby="screen-wake-help"
                   checked={wakeLockEnabled}
                   onChange={(e) => setWakeLockEnabled(e.target.checked)}
                   className="sr-only peer"
@@ -767,8 +628,9 @@ export default function RecordPage() {
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
               </label>
             </div>
-            <p className="text-[11px] text-slate-400">
-              Solicita a Wake Lock API para impedir que a tela do dispositivo bloqueie ou entre em suspensão profunda enquanto a gravação estiver ocorrendo.
+            <p id="screen-wake-help" className="text-xs leading-relaxed text-slate-400">
+              Pede ao navegador que mantenha a tela ligada enquanto esta aba estiver visível.
+              Ao fechar a aba, a gravação para. Ao bloquear a tela ou trocar de aplicativo, o aparelho pode suspender o microfone.
             </p>
 
             {/* Campos Opcionais Antes da Gravação */}
@@ -896,141 +758,6 @@ export default function RecordPage() {
           </div>
         </div>
       )}
-
-      {/* Painel Técnico de Diagnóstico e Matriz de Compatibilidade Real (Requisito 6) */}
-      <div className="rounded-3xl glass-card border border-slate-800 overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setShowCompatibilityMatrix(!showCompatibilityMatrix)}
-          className="w-full px-6 py-4 flex items-center justify-between text-left hover:bg-slate-900/60 transition-colors"
-        >
-          <div className="flex items-center gap-2.5">
-            <ShieldCheck className="w-5 h-5 text-indigo-400" />
-            <div>
-              <h3 className="text-xs sm:text-sm font-bold text-slate-200">
-                Compatibilidade em Segundo Plano & Testes de Resiliência (30 / 60 min)
-              </h3>
-              <p className="text-[11px] text-slate-400">
-                Consulte quais cenários preservam a gravação continuamente e execute o diagnóstico de armazenamento.
-              </p>
-            </div>
-          </div>
-          {showCompatibilityMatrix ? (
-            <ChevronUp className="w-4 h-4 text-slate-400" />
-          ) : (
-            <ChevronDown className="w-4 h-4 text-slate-400" />
-          )}
-        </button>
-
-        {showCompatibilityMatrix && (
-          <div className="px-6 pb-6 pt-2 border-t border-slate-800/80 space-y-4 text-xs">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/80 p-3.5 rounded-2xl border border-slate-800">
-              <div>
-                <p className="font-bold text-slate-200">Simulador Automatizado de Sessões (30m e 60m)</p>
-                <p className="text-[11px] text-slate-400">
-                  Testa persistência no IndexedDB (360 e 720 segmentos), prevenção de duplicidade, recuperação e sincronismo do relógio.
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={isRunningDiagnostics}
-                onClick={runAutomatedResilienceTests}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 shrink-0 transition-all"
-              >
-                <Activity className="w-4 h-4" />
-                <span>{isRunningDiagnostics ? "Executando testes..." : "Executar Diagnóstico"}</span>
-              </button>
-            </div>
-
-            {diagnosticReport && (
-              <div className="p-4 rounded-2xl bg-slate-950/90 border border-emerald-500/30 space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-bold text-emerald-300">
-                    ✅ Diagnóstico concluído às {diagnosticReport.ranAt}
-                  </span>
-                  <span className="font-mono text-[11px] text-slate-400">
-                    Codec: {diagnosticReport.mimeType}
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1">
-                  <div className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-[11px]">
-                    <span className="text-slate-400 block">Sessão 30 min (360 seg.)</span>
-                    <strong className={diagnosticReport.indexedDb30MinPass ? "text-emerald-400" : "text-rose-400"}>
-                      {diagnosticReport.indexedDb30MinPass ? "APROVADO" : "FALHOU"}
-                    </strong>
-                  </div>
-                  <div className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-[11px]">
-                    <span className="text-slate-400 block">Sessão 60 min (720 seg.)</span>
-                    <strong className={diagnosticReport.indexedDb60MinPass ? "text-emerald-400" : "text-rose-400"}>
-                      {diagnosticReport.indexedDb60MinPass ? "APROVADO" : "FALHOU"}
-                    </strong>
-                  </div>
-                  <div className="p-2 rounded-xl bg-slate-900 border border-slate-800 text-[11px]">
-                    <span className="text-slate-400 block">Prevenção de Duplicidade</span>
-                    <strong className={diagnosticReport.deduplicationPass ? "text-emerald-400" : "text-rose-400"}>
-                      {diagnosticReport.deduplicationPass ? "APROVADO" : "FALHOU"}
-                    </strong>
-                  </div>
-                </div>
-                <ul className="text-[11px] text-slate-300 space-y-1 pt-1 font-mono">
-                  {diagnosticReport.details.map((line, i) => (
-                    <li key={i}>• {line}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-[11px]">
-                <thead>
-                  <tr className="border-b border-slate-800 text-slate-400">
-                    <th className="py-2 pr-3">Cenário (30 e 60 min)</th>
-                    <th className="py-2 px-3">Comportamento da Captura</th>
-                    <th className="py-2 pl-3">Proteção de Dados</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 text-slate-300">
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Troca de abas no computador (Chrome, Edge, Safari)</td>
-                    <td className="py-2.5 px-3 text-emerald-300">✅ Preserva 100% da gravação contínua</td>
-                    <td className="py-2.5 pl-3">Segmentos de 5s salvos no IndexedDB; cronômetro por timestamp real.</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Navegação interna pelo sistema</td>
-                    <td className="py-2.5 px-3 text-emerald-300">✅ Preserva 100% da gravação contínua</td>
-                    <td className="py-2.5 pl-3">Singleton mantém MediaRecorder ativo com banner global no topo.</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Chrome em segundo plano no Android</td>
-                    <td className="py-2.5 px-3 text-emerald-300">✅ Continua enquanto o Android mantiver a notificação de microfone ativa</td>
-                    <td className="py-2.5 pl-3">Se o economizador de bateria encerrar após longo período, estado muda para ⚠️ Captura interrompida e preserva tudo até o corte.</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Safari no iPhone (troca de app / segundo plano)</td>
-                    <td className="py-2.5 px-3 text-amber-300">⚠️ Limitado pelo iOS (iOS suspende WebAudio/MediaRecorder fora do Safari após ~30s–2m)</td>
-                    <td className="py-2.5 pl-3">Detecta evento mute/ended, exibe ⚠️ Captura interrompida sem fingir captura e retoma ao voltar.</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Bloqueio de tela</td>
-                    <td className="py-2.5 px-3 text-amber-300">⚠️ Wake Lock evita bloqueio automático; bloqueio manual pelo botão físico no iOS suspende o mic</td>
-                    <td className="py-2.5 pl-3">Flush imediato no visibilitychange + registro transparente da lacuna de suspensão.</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Recebimento de chamadas telefônicas</td>
-                    <td className="py-2.5 px-3 text-amber-300">⚠️ SO assume prioridade exclusiva do microfone (evento track.onmute)</td>
-                    <td className="py-2.5 pl-3">Pausa com ⚠️ Captura interrompida durante a ligação e retoma no track.onunmute ao desligar.</td>
-                  </tr>
-                  <tr>
-                    <td className="py-2.5 pr-3 font-semibold text-white">Perda temporária de internet</td>
-                    <td className="py-2.5 px-3 text-emerald-300">✅ Preserva 100% da gravação contínua offline</td>
-                    <td className="py-2.5 pl-3">Armazena no IndexedDB e reenvia com backoff exponencial e sem duplicidade ao reconectar.</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* Modal Obrigatório de Confirmação para Encerrar Reunião */}
       {showConfirmFinishModal && (
