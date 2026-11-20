@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Download, RefreshCw } from "lucide-react";
 import { getLocalMeetings, saveLocalMeeting } from "@/lib/storage/mockStorage";
 import type { CompleteMeetingDetails } from "@/types/database";
@@ -28,7 +28,7 @@ function getTranscriptParagraphs(transcript: CompleteMeetingDetails["transcript"
   return paragraphs;
 }
 
-export function TranscriptPreview({ details, composer }: { details: CompleteMeetingDetails; composer?: ReactNode }) {
+export function TranscriptPreview({ details }: { details: CompleteMeetingDetails }) {
   const viewport = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ top: 0, max: 0 });
 
@@ -151,12 +151,6 @@ export function TranscriptPreview({ details, composer }: { details: CompleteMeet
           </button>
           {recoveryStatus && <p role="status" className="mt-2 text-sm text-slate-200">{recoveryStatus}</p>}
         </details>
-      )}
-      {composer && (
-        <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-3">
-          <h3 className="text-sm font-semibold text-slate-100">Pergunte ao assistente</h3>
-          {composer}
-        </div>
       )}
     </section>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MessageSquare, Send, UserCheck } from "lucide-react";
 import { MeetingMaterials } from "./MeetingMaterials";
 import { QuestionDictation } from "./QuestionDictation";
@@ -24,11 +24,10 @@ interface MeetingChatProps {
   executive?: boolean;
   voiceComposer?: boolean;
   openMaterials?: boolean;
-  renderTranscript?: (composer: ReactNode) => ReactNode;
   onTimestamp?: (seconds: number) => void;
 }
 
-function Conversation({ details, executive, voiceComposer, openMaterials, renderTranscript, onTimestamp }: MeetingChatProps) {
+function Conversation({ details, executive, voiceComposer, openMaterials, onTimestamp }: MeetingChatProps) {
   const [consultMaterials, setConsultMaterials] = useState(Boolean(openMaterials));
   const [question, setQuestion] = useState("");
   const historyKey = `marca-reunioes-chat-v1:${details.meeting.user_id}:${details.meeting.id}`;
@@ -46,21 +45,19 @@ function Conversation({ details, executive, voiceComposer, openMaterials, render
   const [historySearch, setHistorySearch] = useState("");
   const [pending, setPending] = useState(false);
   const submitting = useRef(false);
-  const [conversationPosition, setConversationPosition] = useState<"top" | "bottom">("top");
   const log = useRef<HTMLDivElement>(null);
-  const [dictatingAt, setDictatingAt] = useState<"top" | "bottom" | null>(null);
+  const [dictating, setDictating] = useState(false);
   const [error, setError] = useState("");
   const ready = Boolean(
     details.transcript?.segments?.some((segment) => segment.text?.trim()) ||
     details.transcript?.raw_text?.trim() || details.support_materials?.length || details.summary?.objective || details.decisions?.length || details.tasks?.length
   );
 
-  async function send(text: string, position: "top" | "bottom") {
+  async function send(text: string) {
     const content = text.trim().slice(0, 2000);
     if (!ready || !content || submitting.current) return;
     submitting.current = true;
     setPending(true);
-    setConversationPosition(position);
     setHistorySearch("");
     setError("");
     setQuestion("");
@@ -93,7 +90,7 @@ function Conversation({ details, executive, voiceComposer, openMaterials, render
 
   useEffect(() => {
     if (!historySearch && log.current) log.current.scrollTop = log.current.scrollHeight;
-  }, [messages, conversationPosition, historySearch]);
+  }, [messages, historySearch]);
 
   function renderConversation() {
     return (
@@ -123,7 +120,7 @@ function Conversation({ details, executive, voiceComposer, openMaterials, render
     );
   }
 
-  function renderComposer(position: "top" | "bottom") {
+  function renderComposer() {
     return (
       <div className="space-y-2">
         {Boolean(details.support_materials?.length) && (
@@ -132,10 +129,10 @@ function Conversation({ details, executive, voiceComposer, openMaterials, render
             Incluir texto dos anexos na análise da OpenAI
           </label>
         )}
-        <form aria-label={position === "bottom" ? "Perguntar abaixo da transcrição" : "Perguntar ao assistente"}
-          onSubmit={(event) => { event.preventDefault(); if (!dictatingAt) void send(question, position); }} className="flex flex-wrap items-start gap-2">
+        <form aria-label="Perguntar ao assistente"
+          onSubmit={(event) => { event.preventDefault(); if (!dictating) void send(question); }} className="flex flex-wrap items-start gap-2">
           <input
-            aria-label={position === "bottom" ? "Sua pergunta abaixo da transcrição" : "Sua pergunta"}
+            aria-label="Sua pergunta"
             placeholder="Ex.: O que ficou decidido sobre o prazo?"
             value={question}
             maxLength={2000}
@@ -143,13 +140,13 @@ function Conversation({ details, executive, voiceComposer, openMaterials, render
             disabled={!ready || pending}
             className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 text-base text-slate-100 focus-visible:outline focus-visible:outline-indigo-400"
           />
-          <button type="submit" disabled={!ready || pending || dictatingAt !== null || !question.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white disabled:opacity-50">
+          <button type="submit" disabled={!ready || pending || dictating || !question.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white disabled:opacity-50">
             <Send className="h-4 w-4" aria-hidden="true" /> Enviar
           </button>
-          <QuestionDictation disabled={!ready || pending || (dictatingAt !== null && dictatingAt !== position)}
-            sendOnEnd={voiceComposer} onListening={(listening) => setDictatingAt(listening ? position : null)} onText={(text) => {
+          <QuestionDictation disabled={!ready || pending}
+            sendOnEnd={voiceComposer} onListening={setDictating} onText={(text) => {
             if (voiceComposer) {
-              void send(text, position);
+              void send(text);
             } else {
               setQuestion((value) => `${value.trim()} ${text}`.trim().slice(0, 2000));
             }
@@ -168,32 +165,24 @@ function Conversation({ details, executive, voiceComposer, openMaterials, render
   }
 
   return (
-    <>
-      <section aria-label="Pergunte sobre esta reunião" className="scroll-mt-28 glass-card rounded-2xl p-4 sm:p-6 space-y-3">
-        <h2 className="flex items-center gap-2 text-base font-semibold text-slate-100">
-          <MessageSquare className="h-5 w-5 text-indigo-300" aria-hidden="true" />
-          {executive ? "Assistente executivo da reunião" : "Pergunte sobre esta reunião"}
-        </h2>
-        {renderComposer("top")}
-        {executive && (
-          <div className="flex flex-wrap gap-2" aria-label="Modelos de pedido">
-            {executivePrompts.map(([label, prompt]) => (
-              <button key={label} type="button" disabled={!ready || pending} onClick={() => setQuestion(prompt)}
-                className="min-h-11 rounded-xl border border-indigo-400/25 px-3 text-sm text-indigo-200 hover:bg-indigo-600/20 disabled:opacity-50">
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-        {conversationPosition === "top" && renderConversation()}
-      </section>
-      {renderTranscript?.(
-        <>
-          {renderComposer("bottom")}
-          {conversationPosition === "bottom" && renderConversation()}
-        </>
+    <section aria-label="Pergunte sobre esta reunião" className="scroll-mt-28 glass-card rounded-2xl p-4 sm:p-6 space-y-3">
+      <h2 className="flex items-center gap-2 text-base font-semibold text-slate-100">
+        <MessageSquare className="h-5 w-5 text-indigo-300" aria-hidden="true" />
+        {executive ? "Assistente executivo da reunião" : "Pergunte sobre esta reunião"}
+      </h2>
+      {renderComposer()}
+      {executive && (
+        <div className="flex flex-wrap gap-2" aria-label="Modelos de pedido">
+          {executivePrompts.map(([label, prompt]) => (
+            <button key={label} type="button" disabled={!ready || pending} onClick={() => setQuestion(prompt)}
+              className="min-h-11 rounded-xl border border-indigo-400/25 px-3 text-sm text-indigo-200 hover:bg-indigo-600/20 disabled:opacity-50">
+              {label}
+            </button>
+          ))}
+        </div>
       )}
-    </>
+      {renderConversation()}
+    </section>
   );
 }
 
