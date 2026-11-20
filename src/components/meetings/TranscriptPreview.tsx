@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Download, RefreshCw } from "lucide-react";
 import { getLocalMeetings, saveLocalMeeting } from "@/lib/storage/mockStorage";
 import type { CompleteMeetingDetails } from "@/types/database";
@@ -28,7 +28,28 @@ function getTranscriptParagraphs(transcript: CompleteMeetingDetails["transcript"
   return paragraphs;
 }
 
-export function TranscriptPreview({ details }: { details: CompleteMeetingDetails }) {
+export function TranscriptPreview({ details, composer }: { details: CompleteMeetingDetails; composer?: ReactNode }) {
+  const viewport = useRef<HTMLDivElement>(null);
+  const [scroll, setScroll] = useState({ top: 0, max: 0 });
+
+  function updateScroll() {
+    const box = viewport.current;
+    if (!box) return;
+    const top = Math.round(box.scrollTop);
+    const max = Math.max(0, box.scrollHeight - box.clientHeight);
+    setScroll((current) => current.top === top && current.max === max ? current : { top, max });
+  }
+
+  useEffect(() => {
+    const box = viewport.current;
+    if (!box) return;
+    const observer = new ResizeObserver(updateScroll);
+    observer.observe(box);
+    if (box.firstElementChild) observer.observe(box.firstElementChild);
+    updateScroll();
+    return () => observer.disconnect();
+  }, [details.transcript]);
+
   const headingId = useId();
   const [recovering, setRecovering] = useState(false);
   const [recoveryStatus, setRecoveryStatus] = useState("");
@@ -98,16 +119,24 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
         )}
       </div>
       {details.transcription_warning && <p role="status" className="text-sm text-amber-200">{details.transcription_warning}</p>}
-      <div role="region" aria-label="Leitura da transcrição" tabIndex={0}
-        className="max-h-[28rem] min-h-36 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-slate-900 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 sm:max-h-[32rem] sm:p-7">
-        {paragraphs.length > 0 ? (
-          <div className="space-y-4 break-words text-sm leading-7 sm:text-base">
-            {paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>)}
-          </div>
-        ) : (
-          <p className="text-sm text-slate-600">
-            {inProgress ? "Nenhum texto foi salvo ainda. A transcrição aparecerá aqui à medida que for salva." : "Esta reunião ainda não tem transcrição para leitura ou download."}
-          </p>
+      <div className="relative rounded-xl border border-slate-200 bg-white">
+        <div ref={viewport} onScroll={updateScroll} role="region" aria-label="Leitura da transcrição" tabIndex={0}
+          className="max-h-[22rem] min-h-36 overflow-y-auto rounded-xl bg-white p-4 pr-12 text-slate-900 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 sm:max-h-[26rem] sm:pl-7">
+          {paragraphs.length > 0 ? (
+            <div className="space-y-4 break-words text-sm leading-7 sm:text-base">
+              {paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-600">
+              {inProgress ? "Nenhum texto foi salvo ainda. A transcrição aparecerá aqui à medida que for salva." : "Esta reunião ainda não tem transcrição para leitura ou download."}
+            </p>
+          )}
+        </div>
+        {scroll.max > 0 && (
+          <input type="range" aria-label="Rolar transcrição" aria-orientation="vertical"
+            min={0} max={scroll.max} step={1} value={scroll.top}
+            onChange={(event) => { if (viewport.current) viewport.current.scrollTop = Number(event.target.value); }}
+            className="absolute right-2 top-2 h-[calc(100%_-_1rem)] w-6 cursor-ns-resize accent-indigo-600 [direction:ltr] [writing-mode:vertical-lr]" />
         )}
       </div>
       {canRecover && (
@@ -122,6 +151,12 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
           </button>
           {recoveryStatus && <p role="status" className="mt-2 text-sm text-slate-200">{recoveryStatus}</p>}
         </details>
+      )}
+      {composer && (
+        <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+          <h3 className="text-sm font-semibold text-slate-100">Pergunte ao assistente</h3>
+          {composer}
+        </div>
       )}
     </section>
   );
