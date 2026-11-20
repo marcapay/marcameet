@@ -157,77 +157,7 @@ function saveToLocalAccountsRegistry(account: UserAccount) {
 export async function syncAccountsAndKeysWithCloud(accountToPush?: UserAccount | null): Promise<UserAccount[]> {
   if (typeof window === "undefined") return [];
 
-  const localRegistry = getLocalAccountsRegistry();
-  const localAccounts = Object.values(localRegistry);
-  if (accountToPush) {
-    localAccounts.push(accountToPush);
-  }
-
-  // 1. Sincronizar com a rota de nuvem /api/cloud-sync (compartilha chaves e contas entre dispositivos)
-  try {
-    const supaUrl = getStoredKey("supa_url", "https://xuooojiaslhwaejsgjxh.supabase.co");
-    const supaAnonKey = getStoredKey("supa_anon_key");
-    const openaiKey = getStoredKey("ai_openai_key");
-    const geminiKey = getStoredKey("ai_gemini_key");
-    const groqKey = getStoredKey("ai_groq_key");
-
-    const res = await fetch("/api/cloud-sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        supa_url: supaUrl || undefined,
-        supa_anon_key: supaAnonKey || undefined,
-        ai_openai_key: openaiKey || undefined,
-        ai_gemini_key: geminiKey || undefined,
-        ai_groq_key: groqKey || undefined,
-        account: accountToPush || undefined,
-        accounts: localAccounts,
-      }),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.supa_url && !getStoredKey("supa_url")) {
-        setStoredKey("supa_url", data.supa_url);
-      }
-      if (data.supa_anon_key && !getStoredKey("supa_anon_key")) {
-        setStoredKey("supa_anon_key", data.supa_anon_key);
-      }
-      if (data.ai_openai_key && !getStoredKey("ai_openai_key")) {
-        setStoredKey("ai_openai_key", data.ai_openai_key);
-      }
-      if (data.ai_gemini_key && !getStoredKey("ai_gemini_key")) {
-        setStoredKey("ai_gemini_key", data.ai_gemini_key);
-      }
-      if (data.ai_groq_key && !getStoredKey("ai_groq_key")) {
-        setStoredKey("ai_groq_key", data.ai_groq_key);
-      }
-
-      if (Array.isArray(data.accounts)) {
-        for (const acc of data.accounts) {
-          if (acc?.email) {
-            saveToLocalAccountsRegistry(acc);
-          }
-        }
-      }
-    }
-  } catch {}
-
-  // 2. Enviar contas locais para o Supabase e buscar todas as contas do Supabase
-  try {
-    for (const acc of localAccounts) {
-      if (acc?.email) {
-        await saveUserAccountToSupabase(acc).catch(() => {});
-      }
-    }
-
-    const supaAccounts = await fetchAllAccountsFromSupabase();
-    for (const acc of supaAccounts) {
-      if (acc?.email) {
-        saveToLocalAccountsRegistry(acc);
-      }
-    }
-  } catch {}
+  if (accountToPush) saveToLocalAccountsRegistry(accountToPush);
 
   return Object.values(getLocalAccountsRegistry());
 }
@@ -333,6 +263,9 @@ export async function registerAccount(params: {
   const passwordHash = hashAccountPassword(cleanEmail, password);
 
   if (existing) {
+    if (!existing.password_hash || existing.password_hash !== passwordHash) {
+      return { success: false, error: "Já existe uma conta com este e-mail. Entre com a senha atual." };
+    }
     const updatedAccount: UserAccount = {
       ...existing,
       id: generateDeterministicUserId(cleanEmail),
@@ -457,26 +390,7 @@ export async function loginAccount(params: {
     } catch {}
   }
 
-  // 4. Se a conta foi criada em outro dispositivo antes da sincronização em nuvem, recuperar/ativar automaticamente pelo e-mail!
-  const now = new Date().toISOString();
-  const defaultName = cleanEmail
-    .split("@")[0]
-    .replace(/[._-]+/g, " ")
-    .replace(/\b\w/g, (l) => l.toUpperCase());
-
-  const autoLinkedAccount: UserAccount = {
-    id: generateDeterministicUserId(cleanEmail),
-    email: cleanEmail,
-    name: defaultName || "Usuário",
-    password_hash: passwordHash,
-    created_at: now,
-    updated_at: now,
-    last_login_at: now,
-  };
-
-  setActiveAccountSession(autoLinkedAccount);
-  await saveUserAccountToSupabase(autoLinkedAccount).catch(() => {});
-  return { success: true, account: autoLinkedAccount };
+  return { success: false, error: "Conta não encontrada neste aparelho. Confira seu e-mail ou use o acesso verificado em Minhas Reuniões." };
 }
 
 /**
@@ -501,6 +415,12 @@ export async function resetAccountPassword(params: {
     (await fetchUserAccountFromSupabase(cleanEmail)) ||
     registry[cleanEmail] ||
     (await getUserAccountFromIndexedDB(cleanEmail));
+
+  const verifiedClient = (await import("@/lib/supabase/meetingAccess")).meetingAccessClient;
+  const verified = verifiedClient ? (await verifiedClient.auth.getUser()).data.user : null;
+  if (!verified?.email_confirmed_at || verified.email?.toLowerCase() !== cleanEmail) {
+    return { success: false, error: "Confirme seu e-mail em Minhas Reuniões antes de redefinir a senha neste aparelho." };
+  }
 
   const newHash = hashAccountPassword(cleanEmail, params.newPassword);
   const now = new Date().toISOString();
@@ -584,5 +504,7 @@ export async function logoutAccount(): Promise<void> {
   if (supa) {
     supa.auth.signOut().catch(() => {});
   }
+  const verifiedClient = (await import("@/lib/supabase/meetingAccess")).meetingAccessClient;
+  await verifiedClient?.auth.signOut({ scope: "local" }).catch(() => {});
   setActiveAccountSession(null);
 }

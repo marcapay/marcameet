@@ -6,7 +6,6 @@ import {
   countChunks,
   getSessionChunkStats,
 } from './chunkStore';
-import { uploadAudioChunkDeduplicated, isSupabaseConfigured } from '@/lib/supabase/client';
 import { processAudioTranscription, hasConfiguredApiKey } from '@/lib/ai';
 
 export interface UploaderSyncState {
@@ -29,7 +28,6 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let currentChunkCallback: ((text: string, segments: any[], sequenceNumber?: number) => void) | undefined = undefined;
 
 const uploaderListeners = new Set<(state: UploaderSyncState) => void>();
-const sentChunkIdsMemory = new Set<string>();
 
 let currentUploaderState: UploaderSyncState = {
   isSyncing: false,
@@ -101,80 +99,6 @@ async function ensureValidWebmBlob(sessionId: string, sequence: number, blob: Bl
   return blob;
 }
 
-async function syncChunkToServerDeduplicated(chunk: {
-  id: string;
-  sessionId: string;
-  sequence: number;
-  mimeType: string;
-  blob: Blob;
-  createdAt: number;
-  durationSeconds?: number;
-  timestampStart?: number;
-}): Promise<boolean> {
-  // Prevenção de duplicidade em memória na mesma sessão
-  if (sentChunkIdsMemory.has(chunk.id)) {
-    return true;
-  }
-
-  let serverOk = false;
-
-  // 1. Sincronizar com endpoint da aplicação (/api/cloud-sync) com chave de idempotência chunk.id
-  if (typeof window !== 'undefined') {
-    try {
-      const response = await fetch('/api/cloud-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chunk: {
-            id: chunk.id,
-            sessionId: chunk.sessionId,
-            sequence: chunk.sequence,
-            mimeType: chunk.mimeType,
-            sizeBytes: chunk.blob.size,
-            createdAt: chunk.createdAt,
-            durationSeconds: chunk.durationSeconds || 5.0,
-            timestampStart: chunk.timestampStart ?? Math.max(0, (chunk.sequence - 1) * 5.0),
-          },
-        }),
-      });
-      if (response.ok) {
-        serverOk = true;
-      }
-    } catch {
-      // Falha de rede ao contatar o servidor
-      serverOk = false;
-    }
-  } else {
-    serverOk = true;
-  }
-
-  // 2. Se o Supabase estiver configurado, envia o registro do chunk deduplicado
-  if (isSupabaseConfigured()) {
-    try {
-      const supaSuccess = await uploadAudioChunkDeduplicated({
-        id: chunk.id,
-        meeting_id: chunk.sessionId,
-        session_id: chunk.sessionId,
-        sequence_number: chunk.sequence,
-        timestamp_start: chunk.timestampStart ?? Math.max(0, (chunk.sequence - 1) * 5.0),
-        duration_seconds: chunk.durationSeconds || 5.0,
-        blob: chunk.blob,
-        status: 'uploaded',
-        created_at: new Date(chunk.createdAt).toISOString(),
-      });
-      if (supaSuccess) {
-        serverOk = true;
-      }
-    } catch {}
-  }
-
-  if (serverOk) {
-    sentChunkIdsMemory.add(chunk.id);
-  }
-
-  return serverOk;
-}
-
 async function refreshStatsForSession(sessionId?: string) {
   if (!sessionId) return;
   const stats = await getSessionChunkStats(sessionId);
@@ -200,17 +124,6 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
     notifyUploaderListeners({ isSyncing: true });
 
     try {
-      // 1. Envio ao servidor com prevenção de duplicidade
-      let isUploaded = Boolean(chunk.uploaded);
-      if (!isUploaded) {
-        isUploaded = await syncChunkToServerDeduplicated(chunk);
-        if (isUploaded) {
-          await updateChunkFlags(chunk.id, { uploaded: true });
-        } else if (typeof window !== 'undefined' && !navigator.onLine) {
-          throw new Error('Conexão de internet indisponível no momento.');
-        }
-      }
-
       // 2. Transcrição progressiva (se houver chave de API configurada e ainda não transcrito)
       let isTranscribed = Boolean(chunk.transcribed);
       if (!isTranscribed && hasConfiguredApiKey() && chunk.blob && chunk.blob.size > 300) {
@@ -237,7 +150,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
         isTranscribed = true;
       }
 
-      if (isUploaded && isTranscribed) {
+      if (isTranscribed) {
         const nowIso = new Date().toISOString();
         await markChunkProcessed(chunk.id, { uploaded: true, transcribed: true });
         const stats = options.targetSessionId
@@ -252,7 +165,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
         });
         options.onSyncStateChange?.(currentUploaderState);
       } else {
-        throw new Error('Falha temporária ao sincronizar segmento com o servidor.');
+        throw new Error('Não foi possível concluir o processamento do segmento.');
       }
     } catch (error: any) {
       const retries = await incrementChunkRetry(chunk.id, error?.message || 'Erro de sincronização');
