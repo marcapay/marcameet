@@ -9,7 +9,6 @@ import {
   Pause,
   Play,
   Sparkles,
-  Tag,
   KeyRound,
   AlertTriangle,
   RefreshCw,
@@ -45,7 +44,6 @@ export default function RecordPage() {
   const [participants, setParticipants] = useState("");
   const [dictating, setDictating] = useState(false);
   const [description, setDescription] = useState("");
-  const [tagsInput, setTagsInput] = useState("Presencial, Alinhamento");
 
   // Opções de gravação
 
@@ -236,10 +234,6 @@ export default function RecordPage() {
           hour: "2-digit",
           minute: "2-digit",
         })}`;
-      const tagsArray = tagsInput
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
       const activeAccount = getCurrentAccount();
 
       const segmentsDraft =
@@ -260,7 +254,7 @@ export default function RecordPage() {
           source_type: "recording",
           status: "TRANSCREVENDO",
           error_message: null,
-          tags: tagsArray,
+          tags: [],
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
@@ -565,7 +559,37 @@ export default function RecordPage() {
       {!isRecording && !processingStatus && (
         <div className="space-y-6">
           {/* Card Principal: Botão INICIAR GRAVAÇÃO */}
-          <div className="p-8 rounded-3xl glass-card border border-slate-800 text-center space-y-6 shadow-2xl">
+          <div className="p-4 sm:p-8 rounded-3xl glass-card border border-slate-800 text-center space-y-6 shadow-2xl">
+            {/* Configuração da reunião */}
+            <div className="space-y-4 text-left">
+              <div className="flex items-start gap-2 border-b border-slate-800/80 pb-3">
+                <Smartphone className="mt-0.5 w-4 h-4 shrink-0 text-indigo-400" aria-hidden="true" />
+                <div>
+                  <h2 className="text-sm font-bold text-slate-200">Proteção automática da tela</h2>
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    Durante a gravação, o sistema pede ao navegador que mantenha a tela ligada enquanto esta aba estiver visível.
+                  </p>
+                </div>
+              </div>
+
+              {/* Campos Opcionais Antes da Gravação */}
+              <div className="space-y-3 pt-2">
+                <MeetingTitleFields title={title} participants={participants} onTitle={setTitle} onParticipants={setParticipants} onListening={setDictating} />
+
+                <div>
+                  <label htmlFor="record-description" className="block text-xs font-semibold text-slate-300 mb-1">Descrição</label>
+                  <textarea
+                    id="record-description"
+                    rows={2}
+                    placeholder="Breve descrição dos objetivos..."
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500 transition-colors resize-none"
+                  />
+                </div>
+              </div>
+            </div>
+
             <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-rose-600 to-indigo-600 p-1 mx-auto shadow-xl shadow-rose-600/30">
               <button
                 onClick={startRecording}
@@ -585,49 +609,6 @@ export default function RecordPage() {
                 INICIAR GRAVAÇÃO
               </button>
               <RecordingGuidance />
-            </div>
-          </div>
-
-          {/* Configuração da reunião */}
-          <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
-            <div className="flex items-start gap-2 border-b border-slate-800/80 pb-3">
-              <Smartphone className="mt-0.5 w-4 h-4 shrink-0 text-indigo-400" aria-hidden="true" />
-              <div>
-                <h2 className="text-sm font-bold text-slate-200">Proteção automática da tela</h2>
-                <p className="text-xs leading-relaxed text-slate-400">
-                  Durante a gravação, o sistema pede ao navegador que mantenha a tela ligada enquanto esta aba estiver visível.
-                </p>
-              </div>
-            </div>
-
-            {/* Campos Opcionais Antes da Gravação */}
-            <div className="space-y-3 pt-2">
-              <MeetingTitleFields title={title} participants={participants} onTitle={setTitle} onParticipants={setParticipants} onListening={setDictating} />
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Descrição</label>
-                <textarea
-                  rows={2}
-                  placeholder="Breve descrição dos objetivos..."
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500 transition-colors resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1 flex items-center gap-1.5">
-                  <Tag className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>Tags (separadas por vírgula)</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Presencial, Vendas, Diretoria"
-                  value={tagsInput}
-                  onChange={(e) => setTagsInput(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500 transition-colors"
-                />
-              </div>
             </div>
           </div>
         </div>
