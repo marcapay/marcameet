@@ -42,7 +42,6 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
       return [];
     }
   });
-  const [historySearch, setHistorySearch] = useState("");
   const [pending, setPending] = useState(false);
   const submitting = useRef(false);
   const log = useRef<HTMLDivElement>(null);
@@ -58,7 +57,6 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
     if (!ready || !content || submitting.current) return;
     submitting.current = true;
     setPending(true);
-    setHistorySearch("");
     setError("");
     setQuestion("");
     const timestamp = new Date().toISOString();
@@ -89,8 +87,8 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
   }
 
   useEffect(() => {
-    if (!historySearch && log.current) log.current.scrollTop = log.current.scrollHeight;
-  }, [messages, historySearch]);
+    if (log.current) log.current.scrollTop = log.current.scrollHeight;
+  }, [messages]);
 
   function renderConversation() {
     return (
@@ -98,15 +96,9 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
         {!ready && <p className="text-sm text-slate-400">O chat fica disponível quando houver transcrição, resumo ou decisões para consultar.</p>}
         {pending && <p role="status" className="text-sm text-slate-300">Consultando a reunião…</p>}
         {error && <p role="alert" className="text-sm text-amber-200">{error}</p>}
-        {executive && messages.length > 0 && (
-          <input type="search" aria-label="Buscar nesta conversa" placeholder="Buscar nesta conversa"
-            value={historySearch} onChange={(event) => setHistorySearch(event.target.value)}
-            className="min-h-11 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100" />
-        )}
         {messages.length > 0 && (
           <div ref={log} role="log" aria-label="Conversa sobre a reunião" className="max-h-80 space-y-3 overflow-y-auto">
-            {messages.filter((message) => message.content.toLocaleLowerCase("pt-BR")
-              .includes(historySearch.trim().toLocaleLowerCase("pt-BR"))).map((message) => (
+            {messages.map((message) => (
               <div key={message.id} className={`rounded-xl p-3 text-sm ${message.role === "user" ? "bg-indigo-600/15" : "bg-slate-900/80"}`}>
                 <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Reuniões"}</p>
                 {message.role === "assistant"
@@ -165,7 +157,7 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
   }
 
   return (
-    <section aria-label="Pergunte sobre esta reunião" className="scroll-mt-28 glass-card rounded-2xl p-4 sm:p-6 space-y-3">
+    <section aria-label="Pergunte sobre esta reunião" className="scroll-mt-28 glass-card rounded-2xl p-4 pt-3 sm:p-6 sm:pt-3 space-y-3">
       <h2 className="flex items-center gap-2 text-base font-semibold text-slate-100">
         <MessageSquare className="h-5 w-5 text-indigo-300" aria-hidden="true" />
         {executive ? "Assistente executivo da reunião" : "Pergunte sobre esta reunião"}

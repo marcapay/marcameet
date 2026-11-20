@@ -364,8 +364,10 @@ export default function MeetingDetailPage() {
 
       {activeTab === "transcript" && (
         <div className="space-y-6">
-          <TranscriptPreview details={details} />
-          <MeetingChat details={details} executive voiceComposer openMaterials={openMaterialsChat} onTimestamp={openTranscriptAt} />
+          <div className="space-y-1">
+            <TranscriptPreview details={details} />
+            <MeetingChat details={details} executive voiceComposer openMaterials={openMaterialsChat} onTimestamp={openTranscriptAt} />
+          </div>
           {Object.keys(transcript?.speaker_map || {}).length > 0 && (
             <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4" id="participantes">
               <h2 className="text-sm font-semibold text-slate-200">Participantes</h2>

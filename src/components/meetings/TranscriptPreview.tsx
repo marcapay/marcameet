@@ -108,7 +108,7 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
   }
 
   return (
-    <section aria-labelledby={headingId} className="space-y-3 rounded-3xl glass-card border border-slate-800 p-4 sm:p-6">
+    <section aria-labelledby={headingId} className="space-y-3 rounded-3xl glass-card border border-slate-800 p-4 pb-2 sm:p-6 sm:pb-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id={headingId} className="text-lg font-semibold text-slate-100">Transcrição da reunião</h2>
         {paragraphs.length > 0 && (
@@ -119,6 +119,19 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
         )}
       </div>
       {details.transcription_warning && <p role="status" className="text-sm text-amber-200">{details.transcription_warning}</p>}
+      {canRecover && (
+        <details className="rounded-xl border border-slate-800 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-indigo-200">Falta parte da conversa?</summary>
+          <p className="my-2 text-xs leading-relaxed text-slate-300">
+            No aparelho em que gravou, você pode transcrever novamente o áudio original que ainda estiver salvo. Ao clicar, o áudio será enviado em partes à OpenAI usando a chave da sua conta.
+          </p>
+          <button type="button" disabled={recovering} onClick={() => void recover()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-indigo-400/50 px-3 text-sm text-indigo-200 disabled:opacity-50">
+            <RefreshCw className={`h-4 w-4 ${recovering ? "motion-safe:animate-spin" : ""}`} aria-hidden="true" />
+            Recuperar transcrição do áudio
+          </button>
+          {recoveryStatus && <p role="status" className="mt-2 text-sm text-slate-200">{recoveryStatus}</p>}
+        </details>
+      )}
       <div className="relative rounded-xl border border-slate-200 bg-white">
         <div ref={viewport} onScroll={updateScroll} role="region" aria-label="Leitura da transcrição" tabIndex={0}
           className="max-h-[22rem] min-h-36 overflow-y-auto rounded-xl bg-white p-4 pr-12 text-slate-900 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 sm:max-h-[26rem] sm:pl-7">
@@ -139,19 +152,6 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
             className="absolute right-2 top-2 h-[calc(100%_-_1rem)] w-6 cursor-ns-resize accent-indigo-600 [direction:ltr] [writing-mode:vertical-lr]" />
         )}
       </div>
-      {canRecover && (
-        <details className="rounded-xl border border-slate-800 p-3">
-          <summary className="cursor-pointer text-sm font-semibold text-indigo-200">Falta parte da conversa?</summary>
-          <p className="my-2 text-xs leading-relaxed text-slate-300">
-            No aparelho em que gravou, você pode transcrever novamente o áudio original que ainda estiver salvo. Ao clicar, o áudio será enviado em partes à OpenAI usando a chave da sua conta.
-          </p>
-          <button type="button" disabled={recovering} onClick={() => void recover()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-indigo-400/50 px-3 text-sm text-indigo-200 disabled:opacity-50">
-            <RefreshCw className={`h-4 w-4 ${recovering ? "motion-safe:animate-spin" : ""}`} aria-hidden="true" />
-            Recuperar transcrição do áudio
-          </button>
-          {recoveryStatus && <p role="status" className="mt-2 text-sm text-slate-200">{recoveryStatus}</p>}
-        </details>
-      )}
     </section>
   );
 }
