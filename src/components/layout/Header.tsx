@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Video, Mic, FileText, Settings, Radio, UserCheck, UserPlus, ShieldCheck } from "lucide-react";
+import { Home, Video, Mic, Settings, Radio, UserCheck, UserPlus, ShieldCheck } from "lucide-react";
 import { getCurrentAccount, subscribeAccountChange } from "@/lib/auth/accountSystem";
 import { UserAccount } from "@/types/database";
 
@@ -24,7 +24,6 @@ export function Header() {
     { label: "Minhas Reuniões", href: "/meetings", icon: Video },
     { label: "Reunião Online", href: "/online-meet", icon: Radio, highlight: true },
     { label: "Gravar Reunião", href: "/record", icon: Mic },
-    { label: "Resumos & Atas", href: "/tasks", icon: FileText },
     { label: "Minha Conta", href: "/account", icon: UserCheck },
   ];
 
