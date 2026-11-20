@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { MessageSquare, Send, UserCheck } from "lucide-react";
 import { MeetingMaterials } from "./MeetingMaterials";
 import { QuestionDictation } from "./QuestionDictation";
@@ -18,6 +18,10 @@ const executivePrompts = [
   ["Estudo", "Analise as alternativas discutidas, as evidências, os riscos e o que precisa ser investigado. Separe fatos da reunião e hipóteses."],
   ["Gráfico", "Crie um gráfico com os dados numéricos comparáveis registrados na reunião e indique sua fonte. Se faltarem números, explique o que está faltando."],
 ];
+
+function searchText(text: string) {
+  return text.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase("pt-BR");
+}
 
 interface MeetingChatProps {
   details: CompleteMeetingDetails;
@@ -37,12 +41,45 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
       return Array.isArray(saved) ? saved.filter((item) =>
         item && typeof item.id === "string" && typeof item.content === "string" &&
         (item.role === "user" || item.role === "assistant")
-      ).slice(-40) : [];
+      ) : [];
     } catch {
       return [];
     }
   });
   const [pending, setPending] = useState(false);
+  const [activeQuestionId, setActiveQuestionId] = useState<string>();
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveQuery, setArchiveQuery] = useState("");
+  const [storageWarning, setStorageWarning] = useState(false);
+  const archiveId = useId();
+  const consultations = useMemo(() => {
+    const entries: MeetingChatMessage[][] = [];
+    for (const message of messages) {
+      const last = entries.at(-1);
+      if (message.role === "assistant" && last?.length === 1 && last[0].role === "user") {
+        last.push(message);
+      } else {
+        entries.push([message]);
+      }
+    }
+    return entries.reverse();
+  }, [messages]);
+  const current = consultations.find(([message]) => message.id === activeQuestionId);
+  const archived = consultations.filter(([message]) => message.id !== activeQuestionId);
+  const archiveDays = useMemo(() => {
+    const query = searchText(archiveQuery.trim());
+    const days = new Map<string, MeetingChatMessage[][]>();
+    for (const entry of consultations) {
+      const [message] = entry;
+      if (message.id === activeQuestionId || !entry.some((item) => searchText(item.content).includes(query))) continue;
+      const date = new Date(message.timestamp || message.id);
+      const day = Number.isNaN(date.getTime()) ? "Sem data" : date.toLocaleDateString("pt-BR");
+      const entries = days.get(day);
+      if (entries) entries.push(entry);
+      else days.set(day, [entry]);
+    }
+    return days;
+  }, [activeQuestionId, archiveQuery, consultations]);
   const submitting = useRef(false);
   const log = useRef<HTMLDivElement>(null);
   const [dictating, setDictating] = useState(false);
@@ -62,22 +99,25 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
     const timestamp = new Date().toISOString();
     const scope = consultMaterials ? "materials" : undefined;
     const message: MeetingChatMessage = { id: timestamp, role: "user", content, timestamp, scope };
+    setActiveQuestionId(message.id);
     setMessages([...messages, message]);
     try {
       const answer = consultMaterials
-        ? await askMeetingMaterialsWithOpenAI(details, content, messages)
+        ? await askMeetingMaterialsWithOpenAI(details, content, messages.slice(-40))
         : await askMeetingAI(details, content, messages.filter((message) => message.scope !== "materials").slice(-20));
       const updated: MeetingChatMessage[] = [...messages, message, {
         id: `${timestamp}-answer`, role: "assistant", content: answer, timestamp, scope,
       }];
-      setMessages(updated.slice(-40));
+      setMessages(updated);
       try {
-        localStorage.setItem(historyKey, JSON.stringify(updated.slice(-40)));
+        localStorage.setItem(historyKey, JSON.stringify(updated));
+        setStorageWarning(false);
       } catch {
-        // A conversa continua disponível enquanto a página estiver aberta.
+        setStorageWarning(true);
       }
     } catch (error) {
       setMessages(messages);
+      setActiveQuestionId(activeQuestionId);
       setError(consultMaterials && error instanceof Error ? error.message : "Não foi possível responder agora. Tente novamente.");
       setQuestion(content);
     } finally {
@@ -87,8 +127,19 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
   }
 
   useEffect(() => {
-    if (log.current) log.current.scrollTop = log.current.scrollHeight;
+    if (log.current) log.current.scrollTop = 0;
   }, [messages]);
+
+  function renderMessage(message: MeetingChatMessage) {
+    return (
+      <div key={message.id} className={`rounded-xl p-3 text-sm ${message.role === "user" ? "bg-indigo-600/15" : "bg-slate-900/80"}`}>
+        <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Reuniões"}</p>
+        {message.role === "assistant"
+          ? <MeetingAnswer content={message.content} title={details.meeting.title} onTimestamp={onTimestamp} />
+          : <p className="whitespace-pre-wrap break-words text-slate-100">{message.content}</p>}
+      </div>
+    );
+  }
 
   function renderConversation() {
     return (
@@ -96,17 +147,45 @@ function Conversation({ details, executive, voiceComposer, openMaterials, onTime
         {!ready && <p className="text-sm text-slate-400">O chat fica disponível quando houver transcrição, resumo ou decisões para consultar.</p>}
         {pending && <p role="status" className="text-sm text-slate-300">Consultando a reunião…</p>}
         {error && <p role="alert" className="text-sm text-amber-200">{error}</p>}
-        {messages.length > 0 && (
+        {storageWarning && <p role="alert" className="text-sm text-amber-200">O histórico atualizado só está disponível enquanto esta página estiver aberta. O navegador não conseguiu salvá-lo.</p>}
+        {current && (
           <div ref={log} role="log" aria-label="Conversa sobre a reunião" className="max-h-80 space-y-3 overflow-y-auto">
-            {messages.map((message) => (
-              <div key={message.id} className={`rounded-xl p-3 text-sm ${message.role === "user" ? "bg-indigo-600/15" : "bg-slate-900/80"}`}>
-                <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Reuniões"}</p>
-                {message.role === "assistant"
-                  ? <MeetingAnswer content={message.content} title={details.meeting.title} onTimestamp={onTimestamp} />
-                  : <p className="whitespace-pre-wrap break-words text-slate-100">{message.content}</p>}
-              </div>
-            ))}
+            {current.map(renderMessage)}
           </div>
+        )}
+        {archived.length > 0 && (
+          <details className="rounded-xl border border-slate-800" onToggle={(event) => setArchiveOpen(event.currentTarget.open)}>
+            <summary className="min-h-11 cursor-pointer px-3 py-2.5 text-sm font-semibold text-indigo-200">
+              Histórico de consultas ({archived.length})
+            </summary>
+            {archiveOpen && (
+              <div className="space-y-3 px-3 pb-3">
+                <input type="search" aria-label="Buscar no histórico de consultas" placeholder="Buscar no histórico de consultas"
+                  value={archiveQuery} onChange={(event) => setArchiveQuery(event.target.value)}
+                  className="min-h-11 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-base text-slate-100" />
+                <div className="max-h-80 space-y-3 overflow-y-auto">
+                  {Array.from(archiveDays, ([day, entries]) => (
+                    <div key={day} className="space-y-1">
+                      <p className="text-xs font-semibold text-slate-300">{day}</p>
+                      {entries.map((entry) => {
+                        const [message] = entry;
+                        const preview = message.content.trim();
+                        return (
+                          <details key={message.id} name={archiveId} className="rounded-lg bg-slate-950/60">
+                            <summary className="min-h-11 cursor-pointer break-words px-3 py-2.5 text-sm text-slate-200">
+                              {preview.length > 120 ? `${preview.slice(0, 120)}…` : preview}
+                            </summary>
+                            <div className="space-y-2 px-2 pb-2">{entry.map(renderMessage)}</div>
+                          </details>
+                        );
+                      })}
+                    </div>
+                  ))}
+                  {archiveDays.size === 0 && <p className="text-sm text-slate-400">Nenhuma consulta encontrada.</p>}
+                </div>
+              </div>
+            )}
+          </details>
         )}
       </>
     );
