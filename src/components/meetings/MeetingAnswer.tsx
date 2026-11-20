@@ -78,13 +78,13 @@ export function MeetingAnswer({ content, title }: { content: string; title: stri
           }
         }}><Copy className="h-3.5 w-3.5" /> Copiar</button>
         <button type="button" className="inline-flex min-h-11 items-center gap-1 px-2 hover:underline"
-          onClick={() => download("marca-meet.md", `# ${title}\n\n${exportText}`, "text/markdown;charset=utf-8")}>
+          onClick={() => download("marca-reunioes.md", `# ${title}\n\n${exportText}`, "text/markdown;charset=utf-8")}>
           <Download className="h-3.5 w-3.5" /> Baixar texto
         </button>
         {slides.length > 0 && (
           <button type="button" className="min-h-11 px-2 hover:underline" onClick={() => {
             const pages = slides.map(([, heading, body]) => `<section><h2>${escapeHtml(heading || title)}</h2><p>${escapeHtml(body.trim())}</p></section>`).join("");
-            download("apresentacao-marca-meet.html", `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>html{scroll-snap-type:y proximity}body{margin:0;font:clamp(18px,3vw,32px)/1.45 system-ui;background:#12223a;color:#f1f5f9}section{box-sizing:border-box;min-height:100svh;display:grid;align-content:center;padding:8vw;scroll-snap-align:start;border-bottom:1px solid #3b5376}p{white-space:pre-wrap}h2{color:#a4ccff}@media print{section{break-after:page}}</style><body>${pages}</body></html>`, "text/html;charset=utf-8");
+            download("apresentacao-marca-reunioes.html", `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>html{scroll-snap-type:y proximity}body{margin:0;font:clamp(18px,3vw,32px)/1.45 system-ui;background:#12223a;color:#f1f5f9}section{box-sizing:border-box;min-height:100svh;display:grid;align-content:center;padding:8vw;scroll-snap-align:start;border-bottom:1px solid #3b5376}p{white-space:pre-wrap}h2{color:#a4ccff}@media print{section{break-after:page}}</style><body>${pages}</body></html>`, "text/html;charset=utf-8");
           }}>Baixar apresentação</button>
         )}
         {copyStatus && <span role="status" className="self-center">{copyStatus}</span>}

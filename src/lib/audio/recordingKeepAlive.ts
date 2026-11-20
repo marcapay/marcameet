@@ -256,7 +256,7 @@ export function updateBrowserBackgroundSessionIndicator(params: {
   if (typeof window === "undefined" || typeof document === "undefined") return;
 
   if (originalDocumentTitle === null) {
-    originalDocumentTitle = document.title || "Marca Meet — Inteligência de Reuniões";
+    originalDocumentTitle = document.title || "Marca Reuniões — Inteligência de Reuniões";
   }
 
   const timePrefix = params.elapsedFormatted ? `(${params.elapsedFormatted}) ` : "";
@@ -299,7 +299,7 @@ export function updateBrowserBackgroundSessionIndicator(params: {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: params.title || "Reunião Presencial",
         artist: statusSubtitle,
-        album: "Marca Meet",
+        album: "Marca Reuniões",
       });
 
       navigator.mediaSession.playbackState =

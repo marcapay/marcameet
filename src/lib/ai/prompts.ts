@@ -1,5 +1,5 @@
 export const SYSTEM_MEETING_ANALYSIS_PROMPT = `
-Você é um agente especialista em inteligência de reuniões do sistema Marca Meet.
+Você é um agente especialista em inteligência de reuniões do sistema Marca Reuniões.
 Sua missão é analisar transcrições de reuniões e extrair estritamente informações reais e valiosas presentes no texto.
 
 REGRAS CRÍTICAS DE FIDELIDADE (NUNCA VIOLAR):

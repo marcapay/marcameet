@@ -39,13 +39,13 @@ export function Header() {
   return (
     <header className="sticky top-0 z-[100] w-full max-w-full border-b border-slate-800 bg-slate-950/98 px-4 sm:px-6 lg:px-10 py-5 flex items-center justify-between min-h-[88px]">
       {/* Brand / Logo (Ícone de Microfone) */}
-      <Link href="/" className="flex items-center gap-3 group" title="Marca Meet - Início">
+      <Link href="/" className="flex items-center gap-3 group" title="Marca Reuniões - Início">
         <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-500/25 group-hover:scale-105 transition-transform">
           <Mic className="w-6 h-6 text-white" />
         </div>
         <div>
           <div className="flex items-center gap-1.5">
-            <span className="font-extrabold text-xl text-white tracking-tight">Marca Meet</span>
+            <span className="font-extrabold text-xl text-white tracking-tight">Marca Reuniões</span>
           </div>
           <p className="text-[11px] text-slate-400 font-medium hidden sm:block">Inteligência de Reuniões</p>
         </div>

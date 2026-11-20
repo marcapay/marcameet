@@ -625,7 +625,7 @@ export function exportMeetingsBackupJson(): string {
   const account = getCurrentAccount();
   const meetings = getLocalMeetings();
   const payload = {
-    app: "Marca Meet",
+    app: "Marca Reuniões",
     version: "2.0",
     exported_at: new Date().toISOString(),
     account: account

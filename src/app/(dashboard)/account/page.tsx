@@ -246,7 +246,7 @@ export default function AccountPage() {
       const dateStr = new Date().toISOString().slice(0, 10);
       const emailSlug = account?.email ? account.email.split("@")[0] : "conta";
       a.href = url;
-      a.download = `marcameet-backup-${emailSlug}-${dateStr}.json`;
+      a.download = `marca-reunioes-backup-${emailSlug}-${dateStr}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -458,7 +458,7 @@ export default function AccountPage() {
             {authTab === "register" && (
               <form onSubmit={handleRegister} className="space-y-4">
                 <div>
-                  <h2 className="text-lg font-semibold text-white">Crie sua conta no Marca Meet</h2>
+                  <h2 className="text-lg font-semibold text-white">Crie sua conta no Marca Reuniões</h2>
 
                 </div>
 

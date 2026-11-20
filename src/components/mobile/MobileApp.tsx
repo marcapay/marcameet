@@ -519,7 +519,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
               <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
               <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-indigo-400">Inteligência de Reuniões</span>
             </div>
-            <h1 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tight">Marca Meet</h1>
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-black text-white tracking-tight">Marca Reuniões</h1>
             <p className="text-xs text-slate-400">Grave reuniões ao vivo ou consulte a análise completa com IA.</p>
           </div>
         </div>

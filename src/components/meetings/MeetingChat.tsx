@@ -66,7 +66,7 @@ function Conversation({ details, executive }: { details: CompleteMeetingDetails;
         <div role="log" aria-label="Conversa sobre a reunião" className="max-h-80 space-y-3 overflow-y-auto">
           {messages.map((message) => (
             <div key={message.id} className={`rounded-xl p-3 text-sm ${message.role === "user" ? "bg-indigo-600/15" : "bg-slate-900/80"}`}>
-              <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Meet"}</p>
+              <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Reuniões"}</p>
               {message.role === "assistant"
                 ? <MeetingAnswer content={message.content} title={details.meeting.title} />
                 : <p className="whitespace-pre-wrap break-words text-slate-100">{message.content}</p>}
