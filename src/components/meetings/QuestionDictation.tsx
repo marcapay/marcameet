@@ -6,9 +6,10 @@ import { Mic, Square } from "lucide-react";
 interface Recognition {
   lang: string;
   continuous: boolean;
+  interimResults: boolean;
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
   onend: (() => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event?: { error?: string }) => void) | null;
   start(): void;
   stop(): void;
   abort(): void;
@@ -56,29 +57,33 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: 
     let captured = "";
     recognition.lang = "pt-BR";
     recognition.continuous = sendOnEnd;
+    recognition.interimResults = !sendOnEnd;
     recognition.onresult = ({ results }) => {
       if (current.current !== recognition) return;
       const text = Array.from(results, (result) => result[0]?.transcript || "").join(" ").trim();
-      if (sendOnEnd) {
-        captured = text;
-        return;
-      }
-      if (text) onText(text);
-      setStatus(text ? "Confira a mensagem antes de enviar." : "Nenhuma fala reconhecida.");
+      if (!text) return;
+      captured = text;
+      if (!sendOnEnd) setStatus(`Ouvindo… ${text}`);
     };
     recognition.onend = () => {
       if (current.current !== recognition) return;
       finish();
-      if (sendOnEnd && captured) {
-        setStatus("");
+      if (captured) {
+        setStatus(sendOnEnd ? "" : "Confira o texto ditado.");
         onText(captured);
       } else {
-        setStatus((value) => value.startsWith("Ouvindo…") ? "Nenhuma fala reconhecida." : value);
+        setStatus("Nenhuma fala reconhecida. Tente novamente ou use o microfone do teclado.");
       }
     };
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
       if (current.current !== recognition) return;
-      setStatus("Ditado indisponível. Confira a permissão do microfone ou digite a mensagem.");
+      if (!sendOnEnd && event?.error === "no-speech" && captured) {
+        recognition.onend?.();
+        return;
+      }
+      setStatus(event?.error === "no-speech"
+        ? "Nenhuma fala reconhecida. Tente novamente ou use o microfone do teclado."
+        : "Ditado indisponível. Confira a permissão do microfone ou use o ditado do teclado.");
       finish();
     };
     current.current = recognition;
