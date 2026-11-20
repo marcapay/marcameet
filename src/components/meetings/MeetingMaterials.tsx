@@ -79,18 +79,24 @@ export function MeetingMaterials({ details, board, onOpenChat, compact = false, 
     );
   }
 
+  if (board && hidePicker && !materials.length) return null;
+
   return (
-    <section className="rounded-3xl glass-card border border-slate-800 p-4 sm:p-8 space-y-4">
-      <h2 className="text-lg font-bold text-white">Material de apoio</h2>
-      <p className="text-sm text-slate-300">O navegador extrai o texto e guarda neste aparelho. Use Consultar na conversa para analisar o texto com a OpenAI configurada em Minha Conta.</p>
+    <section className={board ? "space-y-2" : "rounded-3xl glass-card border border-slate-800 p-4 sm:p-8 space-y-4"}>
+      {!board && (
+        <>
+          <h2 className="text-lg font-bold text-white">Material de apoio</h2>
+          <p className="text-sm text-slate-300">O navegador extrai o texto e guarda neste aparelho. Use Consultar na conversa para analisar o texto com a OpenAI configurada em Minha Conta.</p>
+        </>
+      )}
       {!hidePicker && (
         <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white focus-within:ring-2 focus-within:ring-indigo-300 has-[:disabled]:opacity-50">
           <Upload className="h-4 w-4" aria-hidden="true" />
-          Selecionar arquivos
+          {board ? "Anexar arquivo" : "Selecionar arquivos"}
           {filePicker}
         </label>
       )}
-      <p className="text-xs text-slate-400">JPG, PNG, WebP, PDF, Word (.docx), TXT, CSV ou Markdown. Até 5 MB por arquivo e 10 arquivos por reunião. Fotos precisam ter texto legível e PDFs precisam ter texto selecionável.</p>
+      {!board && <p className="text-xs text-slate-400">JPG, PNG, WebP, PDF, Word (.docx), TXT, CSV ou Markdown. Até 5 MB por arquivo e 10 arquivos por reunião. Fotos precisam ter texto legível e PDFs precisam ter texto selecionável.</p>}
       {reading && <p role="status" className="text-sm text-indigo-200">Lendo os arquivos…</p>}
       {errors.length > 0 && (
         <ul role="alert" className="space-y-1 break-words text-sm text-amber-200">
