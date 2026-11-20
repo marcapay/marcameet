@@ -111,6 +111,7 @@ class RecordingEngineService {
   private watchdogInterval: NodeJS.Timeout | null = null;
   private memoryMonitorInterval: NodeJS.Timeout | null = null;
   private wakeLockEnabled: boolean = true;
+  private microphoneRecovery: Promise<void> | null = null;
   private lastSavedMeetingId: string | null = null;
 
   private listeners: Set<RecordingEngineListeners> = new Set();
@@ -434,6 +435,7 @@ class RecordingEngineService {
         this.notifyTimerTick(this.getElapsedSeconds());
 
         const isHealthy = this.verifyCaptureHealth();
+        if (!isHealthy) void this.recoverMicrophone(true).catch(console.warn);
         if (isHealthy && this.activeSession.status === "background") {
           this.activeSession.status = "recording";
         }
@@ -617,17 +619,32 @@ class RecordingEngineService {
 
     // Prevenção de dupla gravação / limpar gravadores anteriores
     if (this.mediaRecorder && this.mediaRecorder.state !== "inactive") {
-      return this.activeSession!;
+      if (this.activeSession?.meeting_id !== meetingId || this.activeSession.status !== "interrupted") {
+        stream.getTracks().forEach((track) => track.stop());
+        return this.activeSession!;
+      }
+      // O gravador anterior pode continuar pausado mesmo após perder o microfone.
+      this.mediaRecorder.onstop = null;
+      this.mediaRecorder.onerror = null;
+      this.mediaRecorder.stop();
     }
 
     if (this.mediaStream && this.mediaStream !== stream) {
-      try {
-        this.mediaStream.getTracks().forEach((t) => t.stop());
-      } catch {}
+      for (const track of this.mediaStream.getTracks()) {
+        track.onended = null;
+        track.onmute = null;
+        track.onunmute = null;
+        track.stop();
+      }
     }
 
-    const isResumingInterrupted = this.activeSession?.meeting_id === meetingId;
+    const previousSession = this.activeSession;
+    const isResumingInterrupted = previousSession?.meeting_id === meetingId;
     const existingStats = await getSessionChunkStats(meetingId);
+    if (isResumingInterrupted && (this.activeSession !== previousSession || previousSession.status === "finishing")) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error("A reunião foi encerrada durante a reconexão.");
+    }
 
     if (isResumingInterrupted || existingStats.highestSequence > 0) {
       this.sequenceNumber = Math.max(this.sequenceNumber, existingStats.highestSequence);
@@ -757,6 +774,7 @@ class RecordingEngineService {
       };
 
       track.addEventListener("error", (errEvent: any) => {
+        if (this.mediaStream !== stream) return;
         console.error("🚨 [RecordingEngine] Erro na trilha de áudio:", errEvent);
         this.openInterruptionGap(
           "recorder_error",
@@ -1111,7 +1129,9 @@ class RecordingEngineService {
   private async syncWithBackendAndLocal() {
     if (!this.activeSession) return;
     if (isSupabaseConfigured()) {
-      const remote = await fetchActiveMeetingFromSupabase(this.activeSession.meeting_id);
+      const session = this.activeSession;
+      const remote = await fetchActiveMeetingFromSupabase(session.meeting_id);
+      if (this.activeSession !== session) return;
       if (remote) {
         if (remote.transcript_draft && remote.transcript_draft.length > (this.activeSession.transcript_draft || "").length) {
           this.activeSession.transcript_draft = remote.transcript_draft;
@@ -1168,6 +1188,8 @@ class RecordingEngineService {
           this.mediaRecorder.resume();
         } catch (e) {
           console.warn("Aviso ao retomar MediaRecorder:", e);
+          this.handleSourceEnded("Não foi possível retomar a captura de áudio.");
+          return;
         }
       }
 
@@ -1189,6 +1211,52 @@ class RecordingEngineService {
       this.persistCurrentState();
       this.notifyStatusChange();
       this.notifyTimerTick(this.getElapsedSeconds());
+    }
+  }
+
+  public async recoverMicrophone(automatic = false): Promise<void> {
+    if (this.microphoneRecovery) return this.microphoneRecovery;
+
+    const session = this.activeSession;
+    if (!session || session.source_type === "online_meeting" || session.status !== "interrupted") return;
+    if (automatic && (
+      !this.mediaStream || session.source_status !== "ended" || session.auto_paused_reason === "user"
+    )) return;
+
+    this.microphoneRecovery = (async () => {
+      if (automatic) {
+        const permission = await navigator.permissions?.query({ name: "microphone" as PermissionName }).catch(() => null);
+        if (permission?.state !== "granted" || document.visibilityState !== "visible") return;
+      }
+
+      if (this.activeSession !== session || session.status !== "interrupted") return;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, sampleRate: 48000 },
+      });
+
+      if (this.activeSession !== session || session.status !== "interrupted") {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      try {
+        await this.startRecording({
+          meetingId: session.meeting_id,
+          title: session.title,
+          sourceType: session.source_type,
+          stream,
+          wakeLockEnabled: session.wake_lock_enabled,
+        });
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw error;
+      }
+    })();
+
+    try {
+      await this.microphoneRecovery;
+    } finally {
+      this.microphoneRecovery = null;
     }
   }
 
@@ -1445,6 +1513,7 @@ class RecordingEngineService {
 
   public async cancelActiveSession(): Promise<void> {
     if (this.activeSession) {
+      this.activeSession.status = "finishing";
       const meetingId = this.activeSession.meeting_id;
       await this.cleanupRecordingResources();
       await closeActiveMeetingInSupabase(meetingId);

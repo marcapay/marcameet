@@ -1,12 +1,15 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
-import { MessageSquare, Send } from "lucide-react";
+import { useRef, useState, type FormEvent } from "react";
+import { MessageSquare, Send, UserCheck } from "lucide-react";
+import { QuestionDictation } from "./QuestionDictation";
 import { MeetingAnswer } from "./MeetingAnswer";
 import { askMeetingAI, type MeetingChatMessage } from "@/lib/ai";
 import type { CompleteMeetingDetails } from "@/types/database";
 
 const executivePrompts = [
+  ["Buscar trecho", "Em que momento da reunião foi discutido "],
+  ["Vídeo", "Crie um vídeo curto com as decisões e os próximos passos da reunião."],
   ["Resumo", "Faça um resumo executivo com decisões, responsáveis e próximos passos."],
   ["Relatório", "Prepare um relatório executivo com contexto, decisões, riscos e plano de ação. Separe fatos e recomendações."],
   ["Mensagem", "Redija uma mensagem de acompanhamento pronta para copiar, com o que foi combinado, os responsáveis e os prazos."],
@@ -15,33 +18,69 @@ const executivePrompts = [
   ["Gráfico", "Crie um gráfico com os dados numéricos comparáveis registrados na reunião e indique sua fonte. Se faltarem números, explique o que está faltando."],
 ];
 
-function Conversation({ details, executive }: { details: CompleteMeetingDetails; executive?: boolean }) {
+interface MeetingChatProps {
+  details: CompleteMeetingDetails;
+  executive?: boolean;
+  voiceComposer?: boolean;
+  onTimestamp?: (seconds: number) => void;
+}
+
+function Conversation({ details, executive, voiceComposer, onTimestamp }: MeetingChatProps) {
   const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState<MeetingChatMessage[]>([]);
+  const historyKey = `marca-reunioes-chat-v1:${details.meeting.user_id}:${details.meeting.id}`;
+  const [messages, setMessages] = useState<MeetingChatMessage[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(historyKey) || "[]");
+      return Array.isArray(saved) ? saved.filter((item) =>
+        item && typeof item.id === "string" && typeof item.content === "string" &&
+        (item.role === "user" || item.role === "assistant")
+      ).slice(-40) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [historySearch, setHistorySearch] = useState("");
   const [pending, setPending] = useState(false);
+  const submitting = useRef(false);
   const [error, setError] = useState("");
   const ready = Boolean(
     details.transcript?.segments?.some((segment) => segment.text?.trim()) ||
     details.transcript?.raw_text?.trim() || details.summary?.objective || details.decisions?.length || details.tasks?.length
   );
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const content = question.trim();
-    if (!ready || !content || pending) return;
+    void send(question);
+  }
+
+  async function send(text: string) {
+    const content = text.trim().slice(0, 2000);
+    if (!ready || !content || submitting.current) return;
+    submitting.current = true;
     setPending(true);
+    setHistorySearch("");
     setError("");
     setQuestion("");
     const timestamp = new Date().toISOString();
     const message: MeetingChatMessage = { id: timestamp, role: "user", content, timestamp };
     setMessages([...messages, message]);
     try {
-      const answer = await askMeetingAI(details, content, messages);
-      setMessages((current) => [...current, { id: `${timestamp}-answer`, role: "assistant", content: answer, timestamp }]);
+      const answer = await askMeetingAI(details, content, messages.slice(-20));
+      const updated: MeetingChatMessage[] = [...messages, message, {
+        id: `${timestamp}-answer`, role: "assistant", content: answer, timestamp,
+      }];
+      setMessages(updated.slice(-40));
+      try {
+        localStorage.setItem(historyKey, JSON.stringify(updated.slice(-40)));
+      } catch {
+        // A conversa continua disponível enquanto a página estiver aberta.
+      }
     } catch {
+      setMessages(messages);
       setError("Não foi possível responder agora. Tente novamente.");
       setQuestion(content);
     } finally {
+      submitting.current = false;
       setPending(false);
     }
   }
@@ -52,29 +91,7 @@ function Conversation({ details, executive }: { details: CompleteMeetingDetails;
         <MessageSquare className="h-5 w-5 text-indigo-300" aria-hidden="true" />
         {executive ? "Assistente executivo da reunião" : "Pergunte sobre esta reunião"}
       </h2>
-      {executive && (
-        <div className="flex flex-wrap gap-2" aria-label="Modelos de pedido">
-          {executivePrompts.map(([label, prompt]) => (
-            <button key={label} type="button" disabled={!ready || pending} onClick={() => setQuestion(prompt)}
-              className="min-h-11 rounded-xl border border-indigo-400/25 px-3 text-sm text-indigo-200 hover:bg-indigo-600/20 disabled:opacity-50">
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
-      {messages.length > 0 && (
-        <div role="log" aria-label="Conversa sobre a reunião" className="max-h-80 space-y-3 overflow-y-auto">
-          {messages.map((message) => (
-            <div key={message.id} className={`rounded-xl p-3 text-sm ${message.role === "user" ? "bg-indigo-600/15" : "bg-slate-900/80"}`}>
-              <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Reuniões"}</p>
-              {message.role === "assistant"
-                ? <MeetingAnswer content={message.content} title={details.meeting.title} />
-                : <p className="whitespace-pre-wrap break-words text-slate-100">{message.content}</p>}
-            </div>
-          ))}
-        </div>
-      )}
-      <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
+      <form onSubmit={submit} className="flex flex-wrap items-start gap-2">
         <input
           aria-label="Sua pergunta"
           placeholder="Ex.: O que ficou decidido sobre o prazo?"
@@ -87,14 +104,56 @@ function Conversation({ details, executive }: { details: CompleteMeetingDetails;
         <button type="submit" disabled={!ready || pending || !question.trim()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 text-sm font-medium text-white disabled:opacity-50">
           <Send className="h-4 w-4" aria-hidden="true" /> Enviar
         </button>
+        <QuestionDictation disabled={!ready || pending} sendOnEnd={voiceComposer} onText={(text) => {
+          if (voiceComposer) {
+            void send(text);
+          } else {
+            setQuestion((value) => `${value.trim()} ${text}`.trim().slice(0, 2000));
+          }
+        }} />
+        {voiceComposer && Object.keys(details.transcript?.speaker_map || {}).length > 0 && (
+          <a href="#participantes" className="inline-flex min-h-11 items-center gap-1 px-1 text-xs font-semibold text-indigo-200">
+            <UserCheck className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">Participantes</span>
+            <span className="sr-only sm:hidden">Participantes</span>
+          </a>
+        )}
       </form>
       {!ready && <p className="text-sm text-slate-400">O chat fica disponível quando houver transcrição, resumo ou decisões para consultar.</p>}
       {pending && <p role="status" className="text-sm text-slate-300">Buscando na transcrição…</p>}
       {error && <p role="alert" className="text-sm text-amber-200">{error}</p>}
+      {executive && (
+        <div className="flex flex-wrap gap-2" aria-label="Modelos de pedido">
+          {executivePrompts.map(([label, prompt]) => (
+            <button key={label} type="button" disabled={!ready || pending} onClick={() => setQuestion(prompt)}
+              className="min-h-11 rounded-xl border border-indigo-400/25 px-3 text-sm text-indigo-200 hover:bg-indigo-600/20 disabled:opacity-50">
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {executive && messages.length > 0 && (
+        <input type="search" aria-label="Buscar nesta conversa" placeholder="Buscar nesta conversa"
+          value={historySearch} onChange={(event) => setHistorySearch(event.target.value)}
+          className="min-h-11 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100" />
+      )}
+      {messages.length > 0 && (
+        <div role="log" aria-label="Conversa sobre a reunião" className="max-h-80 space-y-3 overflow-y-auto">
+          {messages.filter((message) => message.content.toLocaleLowerCase("pt-BR")
+            .includes(historySearch.trim().toLocaleLowerCase("pt-BR"))).map((message) => (
+            <div key={message.id} className={`rounded-xl p-3 text-sm ${message.role === "user" ? "bg-indigo-600/15" : "bg-slate-900/80"}`}>
+              <p className="mb-1 text-xs font-medium text-indigo-300">{message.role === "user" ? "Você" : "Marca Reuniões"}</p>
+              {message.role === "assistant"
+                ? <MeetingAnswer content={message.content} title={details.meeting.title} onTimestamp={onTimestamp} />
+                : <p className="whitespace-pre-wrap break-words text-slate-100">{message.content}</p>}
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
 
-export function MeetingChat({ details, executive }: { details: CompleteMeetingDetails; executive?: boolean }) {
-  return <Conversation key={details.meeting.id} details={details} executive={executive} />;
+export function MeetingChat(props: MeetingChatProps) {
+  return <Conversation key={`${props.details.meeting.user_id}:${props.details.meeting.id}`} {...props} />;
 }

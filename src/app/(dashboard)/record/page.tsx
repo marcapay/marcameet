@@ -18,6 +18,7 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
+import { RecordingGuidance } from "@/components/audio/RecordingGuidance";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
@@ -194,25 +195,7 @@ export default function RecordPage() {
   // Reconectar Microfone após interrupção (mediante ação explícita do usuário)
   const reconnectAudioSource = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000,
-        },
-      });
-      const current = recordingEngine.getActiveSession();
-      if (current) {
-        await recordingEngine.startRecording({
-          meetingId: current.meeting_id,
-          title: current.title,
-          sourceType: "recording",
-          stream,
-          wakeLockEnabled,
-        });
-        setSourceEnded(false);
-      }
+      await recordingEngine.recoverMicrophone();
     } catch (err) {
       console.error("Erro ao reconectar áudio:", err);
       alert("Não foi possível reconectar a fonte de áudio. Verifique a permissão do microfone.");
@@ -603,9 +586,7 @@ export default function RecordPage() {
               >
                 INICIAR GRAVAÇÃO
               </button>
-              <p className="text-[11px] text-slate-400">
-                Mantenha esta aba aberta. Se o microfone for suspenso, volte aqui para verificar a gravação.
-              </p>
+              <RecordingGuidance />
             </div>
           </div>
 
@@ -630,7 +611,6 @@ export default function RecordPage() {
             </div>
             <p id="screen-wake-help" className="text-xs leading-relaxed text-slate-400">
               Pede ao navegador que mantenha a tela ligada enquanto esta aba estiver visível.
-              Ao fechar a aba, a gravação para. Ao bloquear a tela ou trocar de aplicativo, o aparelho pode suspender o microfone.
             </p>
 
             {/* Campos Opcionais Antes da Gravação */}

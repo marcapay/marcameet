@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Smartphone, AlertCircle, ShieldCheck, Info, Cloud, CheckCircle2 } from "lucide-react";
+import { Smartphone, AlertCircle, ShieldCheck, Cloud, CheckCircle2 } from "lucide-react";
 import {
   getWakeLockState,
   subscribeWakeLockState,
@@ -12,6 +12,8 @@ import {
   subscribeUploaderState,
   UploaderSyncState,
 } from "@/lib/recording/chunkUploader";
+
+import { RecordingGuidance } from "./RecordingGuidance";
 
 interface WakeLockStatusBadgeProps {
   isRecording: boolean;
@@ -61,7 +63,7 @@ export function WakeLockStatusBadge({
             <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span>
               {wakeInfo.message ||
-                "Bloqueio automático de tela indisponível neste navegador. A gravação continua ativa — mantenha a tela ligada."}
+                "O navegador não conseguiu manter a tela ligada automaticamente. Mantenha a tela ligada durante a gravação."}
             </span>
           </div>
         )}
@@ -69,7 +71,7 @@ export function WakeLockStatusBadge({
         {wakeInfo.status === "released" && (
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-[11px] font-semibold">
             <Smartphone className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Gravação contínua em segundo plano ativa</span>
+            <span>Proteção contra apagar a tela inativa</span>
           </div>
         )}
 
@@ -96,15 +98,7 @@ export function WakeLockStatusBadge({
         ) : null}
       </div>
 
-      {/* Orientação transparente sobre gravação em segundo plano e limites do SO */}
-      {showOrientation && (
-        <div className="p-3 rounded-2xl bg-slate-900/90 border border-slate-800 text-slate-300 text-[11px] flex items-start gap-2.5 leading-relaxed">
-          <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-          <span>
-            <strong className="text-slate-100">Gravação contínua em segundo plano:</strong> Você pode trocar de aba no navegador ou navegar por outras páginas do sistema sem interromper a gravação. Em celulares (especialmente iPhone/Safari ao bloquear a tela ou receber chamadas), o sistema operacional pode suspender o microfone temporariamente — caso isso ocorra, você será avisado na tela e todo o áudio anterior continuará salvo no IndexedDB.
-          </span>
-        </div>
-      )}
+      {showOrientation && <RecordingGuidance />}
     </div>
   );
 }

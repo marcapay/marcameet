@@ -285,7 +285,7 @@ export function ActiveMeetingBanner() {
                 Duração: <RecordingTimerDisplay className="font-mono font-bold text-amber-300" /> •{" "}
                 {isInterrupted
                   ? "Captura suspensa/interrompida. Os segmentos anteriores estão salvos no IndexedDB."
-                  : "Sessão ativa em segundo plano enquanto você navega pelo sistema."}
+                  : "Mantenha a aba do gravador aberta até finalizar."}
               </p>
             </div>
           </div>

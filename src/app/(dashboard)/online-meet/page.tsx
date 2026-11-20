@@ -27,6 +27,7 @@ import {
   RefreshCw
 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
+import { RecordingGuidance } from "@/components/audio/RecordingGuidance";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
@@ -684,6 +685,12 @@ export default function OnlineMeetingPage() {
               </label>
             </div>
           </div>
+
+          <RecordingGuidance />
+          <p className="text-xs leading-relaxed text-slate-300">
+            Para gravar uma reunião online, use um navegador que permita compartilhar uma aba com áudio.
+            Se o navegador do celular não oferecer essa opção, use um computador. Mantenha a aba da reunião aberta e o compartilhamento ativo até finalizar.
+          </p>
 
           {/* Botão de Ação */}
           <div className="pt-2">

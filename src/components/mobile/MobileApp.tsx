@@ -37,6 +37,7 @@ import { requestScreenWakeLock, releaseScreenWakeLock, startAudioKeepAlive, stop
 import { CompleteMeetingDetails } from "@/types/database";
 import { MeetingChat } from "@/components/meetings/MeetingChat";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
+import { RecordingGuidance } from "@/components/audio/RecordingGuidance";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
 import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
@@ -656,7 +657,11 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 </div>
 
                 {/* Indicador Discreto de Wake Lock ("Tela ativa durante a gravação") + Orientação ao Usuário */}
-                <WakeLockStatusBadge isRecording={isRecording} savedChunksCount={savedChunksCount} />
+                {isRecording ? (
+                  <WakeLockStatusBadge isRecording={isRecording} savedChunksCount={savedChunksCount} />
+                ) : (
+                  <RecordingGuidance />
+                )}
               </div>
 
               {/* Botões de Ação da Gravação */}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useDeferredValue, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   FileText,
@@ -16,20 +16,16 @@ import {
   Download,
   Copy,
   Edit2,
-  Search,
   Check,
   ArrowLeft,
   Share2,
-  UserCheck,
   Trash2,
   X,
-  MessageSquare,
   ChevronRight
 } from "lucide-react";
 import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MeetingChat } from "@/components/meetings/MeetingChat";
-import { MediaPlayer } from "@/components/audio/MediaPlayer";
 import { ensureValidUuid } from "@/lib/supabase/client";
 import Link from "next/link";
 
@@ -42,9 +38,7 @@ export default function MeetingDetailPage() {
   const [activeTab, setActiveTab] = useState<"summary" | "transcript" | "export">("summary");
   const [loadSlow, setLoadSlow] = useState(false);
   
-  // Transcrição & Player
-  const [seekTime, setSeekTime] = useState<number | null>(null);
-  const [transcriptSearch, setTranscriptSearch] = useState("");
+  const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [newSpeakerName, setNewSpeakerName] = useState("");
   const [copiedNotification, setCopiedNotification] = useState<string | null>(null);
@@ -79,24 +73,19 @@ export default function MeetingDetailPage() {
     };
   }, [id]);
 
-  // Transcrição Filtrada com useDeferredValue e useMemo
-  const deferredSearch = useDeferredValue(transcriptSearch);
-  const [visibleSegmentsLimit, setVisibleSegmentsLimit] = useState(60);
+  useEffect(() => {
+    if (activeTab === "transcript" && selectedSegment) {
+      document.getElementById("trecho-selecionado")?.scrollIntoView({ block: "center" });
+    }
+  }, [activeTab, selectedSegment]);
 
-  const filteredSegments = useMemo(() => {
+  function openTranscriptAt(seconds: number) {
     const segments = details?.transcript?.segments || [];
-    const query = deferredSearch.trim().toLowerCase();
-    if (!query) return segments;
-    return segments.filter(
-      (seg) =>
-        seg.text.toLowerCase().includes(query) ||
-        seg.speaker.toLowerCase().includes(query)
-    );
-  }, [details?.transcript?.segments, deferredSearch]);
-
-  const visibleSegments = useMemo(() => {
-    return filteredSegments.slice(0, visibleSegmentsLimit);
-  }, [filteredSegments, visibleSegmentsLimit]);
+    const match = segments.find((segment) => Math.floor(segment.start_time) === seconds)
+      ?? segments.find((segment) => segment.start_time <= seconds && seconds < segment.end_time);
+    setSelectedSegment(match?.id ?? null);
+    setActiveTab("transcript");
+  }
 
   if (!details) {
     return (
@@ -210,15 +199,6 @@ export default function MeetingDetailPage() {
         {/* Ações da Reunião */}
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => document.getElementById("assistente-da-reuniao")?.scrollIntoView({ block: "start" })}
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-indigo-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition-all active:scale-95 border border-indigo-400/30 animate-pulse hover:animate-none"
-            title="Conversar com a IA sobre o que foi discutido nesta reunião"
-          >
-            <MessageSquare className="w-4 h-4 text-purple-200" />
-            <span>Conversar com IA</span>
-          </button>
-
-          <button
             onClick={() => {
               setNewTitle(meeting.title);
               setIsEditingTitle(true);
@@ -268,20 +248,8 @@ export default function MeetingDetailPage() {
         </div>
       )}
 
-      <div id="assistente-da-reuniao" className="scroll-mt-24">
-        <MeetingChat details={details} executive />
-      </div>
-
-      {/* Player Integrado */}
-      <MediaPlayer
-        meetingId={meeting.id}
-        fallbackDuration={meeting.duration_seconds}
-        transcriptText={transcript?.raw_text}
-        seekToTime={seekTime}
-      />
-
       {/* Abas Principais em Container Único Compacto */}
-      <div className="p-1 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-1 w-full max-w-full overflow-hidden shadow-inner">
+      <div id="abas-da-reuniao" className="scroll-mt-24 p-1 rounded-2xl bg-slate-900/90 border border-slate-800 flex items-center justify-between gap-1 w-full max-w-full overflow-hidden shadow-inner">
         <button
           onClick={() => setActiveTab("summary")}
           className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
@@ -370,7 +338,7 @@ export default function MeetingDetailPage() {
                       <p className="text-xs font-semibold text-slate-100">{d.decision_text}</p>
                       {d.timestamp_start !== undefined && (
                         <button
-                          onClick={() => setSeekTime(d.timestamp_start ?? null)}
+                          onClick={() => openTranscriptAt(d.timestamp_start ?? 0)}
                           className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1"
                         >
                           <Clock className="w-3 h-3" />
@@ -404,7 +372,7 @@ export default function MeetingDetailPage() {
                       <p className="text-xs text-slate-200">{h.description}</p>
                       {h.timestamp_start !== undefined && (
                         <button
-                          onClick={() => setSeekTime(h.timestamp_start ?? null)}
+                          onClick={() => openTranscriptAt(h.timestamp_start ?? 0)}
                           className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1"
                         >
                           <Clock className="w-3 h-3" />
@@ -460,7 +428,7 @@ export default function MeetingDetailPage() {
 
                     {task.timestamp_start !== undefined && (
                       <button
-                        onClick={() => setSeekTime(task.timestamp_start ?? null)}
+                        onClick={() => openTranscriptAt(task.timestamp_start ?? 0)}
                         className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1 pt-1"
                       >
                         <Clock className="w-3 h-3" />
@@ -550,121 +518,92 @@ export default function MeetingDetailPage() {
         </div>
       )}
 
-      {/* TAB 2: TRANSCRIÇÃO COMPLETA & EDIÇÃO DE NOMES */}
       {activeTab === "transcript" && (
         <div className="space-y-6">
-          {/* Busca na Transcrição & Mapeamento de Participantes */}
-          <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
-                <input
-                  type="text"
-                  placeholder="Pesquisar palavra ou trecho na transcrição..."
-                  value={transcriptSearch}
-                  onChange={(e) => setTranscriptSearch(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              {/* Lista de Participantes Identificados */}
-              <div className="flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-indigo-400" />
-                <span className="text-xs font-semibold text-slate-300">Participantes:</span>
-              </div>
-            </div>
-
-            {/* Painel de Substituição de Falantes */}
-            <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-800/80">
-              {Object.entries(transcript?.speaker_map || {}).map(([oldKey, currentName]) => (
-                <div key={oldKey} className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
-                  {editingSpeaker === oldKey ? (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="text"
-                        value={newSpeakerName}
-                        onChange={(e) => setNewSpeakerName(e.target.value)}
-                        placeholder={currentName}
-                        className="px-2 py-0.5 rounded bg-slate-950 text-white text-xs border border-indigo-500 focus:outline-none"
-                      />
-                      <button
-                        onClick={() => handleSaveSpeakerName(oldKey)}
-                        className="px-2 py-0.5 rounded bg-indigo-600 text-white font-bold text-[10px]"
-                      >
-                        Salvar
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <span className="text-slate-400 font-mono text-[10px]">{oldKey} →</span>
-                      <span className="font-bold text-indigo-300">{currentName}</span>
-                      <button
-                        onClick={() => {
-                          setEditingSpeaker(oldKey);
-                          setNewSpeakerName(currentName);
-                        }}
-                        className="p-1 text-slate-500 hover:text-white"
-                        title="Editar Nome do Participante"
-                      >
-                        <Edit2 className="w-3 h-3" />
-                      </button>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Segmentos de Texto com Timestamps Clicáveis */}
-          <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">
-              Linha do Tempo de Diálogo ({filteredSegments.length} trechos)
-            </h2>
-
-            <div className="space-y-4 divide-y divide-slate-800/60">
-              {visibleSegments.map((seg) => (
-                <div key={seg.id} className="pt-4 first:pt-0 space-y-1.5 group">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setSeekTime(seg.start_time)}
-                        className="px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white font-mono text-xs font-bold transition-all border border-indigo-500/30"
-                        title="Tocar áudio deste trecho"
-                      >
-                        {formatTimestamp(seg.start_time)}
-                      </button>
-                      <span className="font-bold text-slate-200 text-xs">
-                        {transcript?.speaker_map?.[seg.speaker] || seg.speaker}
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => copyToClipboard(`"${seg.text}" (${seg.speaker})`, "Trecho copiado!")}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 text-slate-500 hover:text-white text-xs flex items-center gap-1"
-                    >
-                      <Copy className="w-3 h-3" />
-                      <span>Copiar</span>
-                    </button>
+          <MeetingChat details={details} executive voiceComposer onTimestamp={openTranscriptAt} />
+          {Object.keys(transcript?.speaker_map || {}).length > 0 && (
+            <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4" id="participantes">
+              <h2 className="text-sm font-semibold text-slate-200">Participantes</h2>
+              {/* Painel de Substituição de Falantes */}
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-800/80">
+                {Object.entries(transcript?.speaker_map || {}).map(([oldKey, currentName]) => (
+                  <div key={oldKey} className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs">
+                    {editingSpeaker === oldKey ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={newSpeakerName}
+                          onChange={(e) => setNewSpeakerName(e.target.value)}
+                          placeholder={currentName}
+                          className="px-2 py-0.5 rounded bg-slate-950 text-white text-xs border border-indigo-500 focus:outline-none"
+                        />
+                        <button
+                          onClick={() => handleSaveSpeakerName(oldKey)}
+                          className="px-2 py-0.5 rounded bg-indigo-600 text-white font-bold text-[10px]"
+                        >
+                          Salvar
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="text-slate-400 font-mono text-[10px]">{oldKey} →</span>
+                        <span className="font-bold text-indigo-300">{currentName}</span>
+                        <button
+                          onClick={() => {
+                            setEditingSpeaker(oldKey);
+                            setNewSpeakerName(currentName);
+                          }}
+                          className="p-1 text-slate-500 hover:text-white"
+                          title="Editar Nome do Participante"
+                        >
+                          <Edit2 className="w-3 h-3" />
+                        </button>
+                      </>
+                    )}
                   </div>
-
-                  <p className="text-sm text-slate-300 leading-relaxed font-sans pl-2 border-l-2 border-slate-800 group-hover:border-indigo-500 transition-colors">
-                    {seg.text}
-                  </p>
-                </div>
-              ))}
-            </div>
-
-            {filteredSegments.length > visibleSegmentsLimit && (
-              <div className="pt-4 text-center">
-                <button
-                  onClick={() => setVisibleSegmentsLimit((prev) => prev + 60)}
-                  className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-indigo-300 font-bold text-xs border border-indigo-500/30 transition-all"
-                >
-                  Carregar mais trechos ({filteredSegments.length - visibleSegmentsLimit} restantes)
-                </button>
+                ))}
               </div>
+            </div>
+          )}
+          <section className="rounded-3xl glass-card border border-slate-800 p-4 sm:p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-slate-100">Resumo em blocos</h2>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                { title: "Objetivo", items: [summary?.objective] },
+                { title: "Assuntos discutidos", items: summary?.key_topics || [] },
+                { title: "Decisões", items: decisions.map((decision) => decision.decision_text) },
+                { title: "Próximos passos", items: next_steps_agreed?.length ? next_steps_agreed : tasks.map((task) => task.title) },
+                { title: "Conclusão", items: [summary?.conclusions] },
+              ].map(({ title, items }) => {
+                const entries = items.filter((item) => item?.trim());
+                if (!entries.length) return null;
+                return (
+                  <div key={title} className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 space-y-2">
+                    <h3 className="text-sm font-semibold text-indigo-200">{title}</h3>
+                    <ul className="space-y-1 pl-4 list-disc text-sm text-slate-300">
+                      {entries.slice(0, 5).map((entry, index) => <li key={index}>{entry}</li>)}
+                    </ul>
+                    {entries.length > 5 && <p className="text-xs text-slate-400">Consulte Análise IA para ver mais.</p>}
+                  </div>
+                );
+              })}
+            </div>
+            {!summary?.objective && !summary?.key_topics?.length && !summary?.conclusions &&
+              !decisions.length && !tasks.length && !next_steps_agreed?.length && (
+              <p className="text-sm text-slate-400">Use a barra acima para pedir um resumo da transcrição.</p>
             )}
-          </div>
+          </section>
+          {selectedSegment && (() => {
+            const segment = transcript?.segments?.find(({ id }) => id === selectedSegment);
+            if (!segment) return null;
+            return (
+              <section id="trecho-selecionado" className="rounded-2xl border border-indigo-500/30 p-4 text-sm space-y-2">
+                <h2 className="font-semibold text-indigo-200">Trecho selecionado · {formatTimestamp(segment.start_time)}</h2>
+                <p className="text-slate-300">{segment.text}</p>
+                <button type="button" onClick={() => setSelectedSegment(null)} className="min-h-11 text-indigo-200">Fechar trecho</button>
+              </section>
+            );
+          })()}
         </div>
       )}
 
