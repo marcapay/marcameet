@@ -203,6 +203,7 @@ export async function processAudioTranscription(
 
       const res = await fetchOpenAI("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
+        signal: AbortSignal.timeout(45000),
         headers: {
           Authorization: `Bearer ${openaiKey}`,
         },
@@ -251,6 +252,7 @@ export async function processAudioTranscription(
 
       const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
         method: "POST",
+        signal: AbortSignal.timeout(45000),
         headers: {
           Authorization: `Bearer ${groqKey}`,
         },
@@ -338,6 +340,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
         {
           method: "POST",
+          signal: AbortSignal.timeout(45000),
           headers: { "Content-Type": "application/json" },
           body: payloadBody,
         }
@@ -387,6 +390,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
 
       const res = await fetchOpenAI("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
+        signal: AbortSignal.timeout(45000),
         headers: {
           Authorization: `Bearer ${openaiKey}`,
         },
@@ -430,6 +434,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
 
       const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
         method: "POST",
+        signal: AbortSignal.timeout(45000),
         headers: {
           Authorization: `Bearer ${groqKey}`,
         },
@@ -478,6 +483,7 @@ export async function processAIAnalysis(transcriptText: string, segments: any[] 
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`,
         {
           method: "POST",
+          signal: AbortSignal.timeout(45000),
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             contents: [
@@ -507,6 +513,7 @@ export async function processAIAnalysis(transcriptText: string, segments: any[] 
     try {
       const res = await fetchOpenAI("https://api.openai.com/v1/chat/completions", {
         method: "POST",
+        signal: AbortSignal.timeout(45000),
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${openaiKey}`,

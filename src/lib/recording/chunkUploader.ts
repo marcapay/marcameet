@@ -29,6 +29,7 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let currentChunkCallback: ((text: string, segments: any[], sequenceNumber?: number) => void) | undefined = undefined;
 
 const uploaderListeners = new Set<(state: UploaderSyncState) => void>();
+const suspendedSessions = new Set<string>();
 const sentChunkIdsMemory = new Set<string>();
 
 let currentUploaderState: UploaderSyncState = {
@@ -188,7 +189,8 @@ async function refreshStatsForSession(sessionId?: string) {
 async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
   await refreshStatsForSession(options.targetSessionId);
 
-  while (typeof window === 'undefined' || navigator.onLine) {
+  while ((!options.targetSessionId || !suspendedSessions.has(options.targetSessionId)) &&
+    (typeof window === 'undefined' || navigator.onLine)) {
     const chunk = await getOldestChunk(options.targetSessionId);
 
     if (!chunk) {
@@ -197,6 +199,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
       break;
     }
 
+    if (suspendedSessions.has(chunk.sessionId)) break;
     notifyUploaderListeners({ isSyncing: true });
 
     try {
@@ -211,6 +214,8 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
         }
       }
 
+      if (suspendedSessions.has(chunk.sessionId)) break;
+
       // 2. Transcrição progressiva (se houver chave de API configurada e ainda não transcrito)
       let isTranscribed = Boolean(chunk.transcribed);
       if (!isTranscribed && hasConfiguredApiKey() && chunk.blob && chunk.blob.size > 300) {
@@ -218,6 +223,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
           const validBlob = await ensureValidWebmBlob(chunk.sessionId, chunk.sequence, chunk.blob, chunk.mimeType);
           const ext = chunk.mimeType.includes('mp4') ? 'mp4' : chunk.mimeType.includes('ogg') ? 'ogg' : 'webm';
           const result = await processAudioTranscription(validBlob, `chunk_${chunk.sequence}.${ext}`);
+          if (suspendedSessions.has(chunk.sessionId)) break;
           if (result && result.raw_text && result.raw_text.trim().length > 0) {
             const cb = options.onChunkTranscribed || currentChunkCallback;
             cb?.(result.raw_text.trim(), result.segments || [], chunk.sequence);
@@ -225,6 +231,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
           isTranscribed = true;
           await updateChunkFlags(chunk.id, { transcribed: true });
         } catch (transcribeErr: any) {
+          if (suspendedSessions.has(chunk.sessionId)) break;
           if (typeof window !== 'undefined' && !navigator.onLine) {
             throw transcribeErr;
           }
@@ -255,6 +262,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
         throw new Error('Falha temporária ao sincronizar segmento com o servidor.');
       }
     } catch (error: any) {
+      if (suspendedSessions.has(chunk.sessionId)) break;
       const retries = await incrementChunkRetry(chunk.id, error?.message || 'Erro de sincronização');
       console.warn(`[RecorderUploader] Tentativa #${retries} falhou para ${chunk.id}:`, error?.message || error);
       notifyUploaderListeners({
@@ -272,6 +280,7 @@ async function runUploadLoop(options: UploadQueueOptions): Promise<void> {
 }
 
 export async function processUploadQueue(options: UploadQueueOptions = {}): Promise<void> {
+  if (options.targetSessionId && suspendedSessions.has(options.targetSessionId)) return;
   if (options.onChunkTranscribed) {
     currentChunkCallback = options.onChunkTranscribed;
   }
@@ -290,7 +299,9 @@ export async function processUploadQueue(options: UploadQueueOptions = {}): Prom
 
   if (activeUploadPromise) {
     await activeUploadPromise;
+    if (activeUploadPromise) return activeUploadPromise;
   }
+  if (options.targetSessionId && suspendedSessions.has(options.targetSessionId)) return;
 
   activeUploadPromise = (async () => {
     try {
@@ -320,6 +331,16 @@ export function destroyUploader(): void {
     clearTimeout(retryTimer);
     retryTimer = null;
   }
+}
+
+export function suspendUploadQueue(sessionId: string) {
+  suspendedSessions.add(sessionId);
+  destroyUploader();
+  notifyUploaderListeners({ isSyncing: false });
+}
+
+export function resumeUploadQueue(sessionId: string) {
+  suspendedSessions.delete(sessionId);
 }
 
 export async function getPendingChunksCount(sessionId?: string): Promise<number> {

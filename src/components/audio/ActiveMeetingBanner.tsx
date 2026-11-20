@@ -7,7 +7,7 @@ import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay"
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 import { getWakeLockState, subscribeWakeLockState, WakeLockStateInfo } from "@/lib/audio/recordingKeepAlive";
 import { getUploaderState, subscribeUploaderState, UploaderSyncState } from "@/lib/recording/chunkUploader";
-import { saveLocalMeeting } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAIAnalysis } from "@/lib/ai";
 import { getCurrentAccount } from "@/lib/auth/accountSystem";
 import { ActiveMeetingSessionState, CompleteMeetingDetails } from "@/types/database";
@@ -21,6 +21,8 @@ export function ActiveMeetingBanner() {
   const [syncInfo, setSyncInfo] = useState<UploaderSyncState>(getUploaderState());
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
+  const [finishMessage, setFinishMessage] = useState("");
+  const [finishError, setFinishError] = useState("");
 
   useEffect(() => {
     const unsubscribe = recordingEngine.subscribe({
@@ -59,7 +61,11 @@ export function ActiveMeetingBanner() {
   }, []);
 
   if (!activeSession || activeSession.status === "finished" || activeSession.status === "idle") {
-    return null;
+    return isFinishing || finishError ? (
+      <p role={finishError ? "alert" : "status"} className="border-b border-indigo-500/40 bg-slate-900 p-3 text-sm text-slate-100">
+        {finishError || finishMessage}
+      </p>
+    ) : null;
   }
 
   const handleRetakeMeeting = () => {
@@ -73,8 +79,10 @@ export function ActiveMeetingBanner() {
   const confirmFinishMeeting = async () => {
     try {
       setIsFinishing(true);
+      setFinishError("");
+      setFinishMessage("Preparando o áudio salvo neste aparelho…");
       const sessionSnapshot = activeSession;
-      const result = await recordingEngine.finishMeeting();
+      const result = await recordingEngine.finishMeeting(setFinishMessage);
 
       const newMeetingId = result.meetingId;
       const duration = result.durationSeconds;
@@ -87,141 +95,153 @@ export function ActiveMeetingBanner() {
           ? result.segmentsDraft
           : [];
 
-      let aiData: any = null;
-      try {
-        aiData = await processAIAnalysis(rawTextDraft, segmentsDraft);
-      } catch {}
-
-      const formattedTasks = (aiData?.tasks || []).map((t: any, idx: number) => ({
-        id: `task-${Date.now()}-${idx}`,
-        meeting_id: newMeetingId,
-        user_id: activeAccount?.id || "u-001",
-        title: t.title,
-        description: t.description || "",
-        assignee: t.assignee || "Responsável não definido",
-        original_due_date_text: t.due_date_text || "Prazo não definido",
-        priority: t.priority || "Média",
-        status: "Pendente" as const,
-        timestamp_start: t.timestamp_start,
-        original_snippet: t.original_snippet,
-        created_at: new Date().toISOString(),
-        meeting_title: meetingTitle,
-      }));
-
-      const finalDetails: CompleteMeetingDetails = {
-        transcription_warning: result.transcriptionWarning,
-        meeting: {
-          id: newMeetingId,
+      function buildDetails(aiData: Awaited<ReturnType<typeof processAIAnalysis>> | null): CompleteMeetingDetails {
+        const formattedTasks = (aiData?.tasks || []).map((t: any, idx: number) => ({
+          id: `task-${Date.now()}-${idx}`,
+          meeting_id: newMeetingId,
           user_id: activeAccount?.id || "u-001",
-          user_email: activeAccount?.email,
-          title: meetingTitle,
-          description: result.participants ? `Participantes informados: ${result.participants}.` : "Gravação recuperada.",
-          meeting_date: sessionSnapshot.started_at || new Date().toISOString(),
-          duration_seconds: duration,
-          source_type: sessionSnapshot.source_type || "recording",
-          status: "CONCLUIDA",
-          error_message: null,
-          tags: ["Recuperada", "Salva na Conta"],
-          created_at: sessionSnapshot.started_at || new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          tasks_count: formattedTasks.length,
-          decisions_count: (aiData?.decisions || []).length,
-          highlights_count: (aiData?.highlights || []).length,
-        },
-        transcript: {
-          id: `t-${newMeetingId}`,
-          meeting_id: newMeetingId,
-          raw_text: rawTextDraft,
-          speaker_map: result.speakerMap || { "Participante 1": "Participante 1" },
-          segments: segmentsDraft.map((s: any, i: number) => ({
-            id: `seg-${newMeetingId}-${i}`,
-            transcript_id: `t-${newMeetingId}`,
-            meeting_id: newMeetingId,
-            start_time: s.start_time || 0,
-            end_time: s.end_time || duration || 5,
-            speaker: s.speaker || "Participante 1",
-            text: s.text || rawTextDraft,
-          })),
-        },
-        summary: aiData
-          ? {
-              id: `sum-${newMeetingId}`,
-              meeting_id: newMeetingId,
-              objective: aiData.objective,
-              key_topics: aiData.key_topics || [],
-              conclusions: aiData.conclusions,
-              final_status: aiData.final_status || "Concluída",
-            }
-          : undefined,
-        highlights: (aiData?.highlights || []).map((h: any, i: number) => ({
-          id: `h-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          description: h.description,
-          timestamp_start: h.timestamp_start,
-          original_snippet: h.original_snippet,
-        })),
-        decisions: (aiData?.decisions || []).map((d: any, i: number) => ({
-          id: `d-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          decision_text: d.decision_text,
-          timestamp_start: d.timestamp_start,
-          original_snippet: d.original_snippet,
-        })),
-        tasks: formattedTasks,
-        pending_items: (aiData?.pending_items || []).map((p: any, i: number) => ({
-          id: `p-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          item_text: p.item_text,
-          timestamp_start: p.timestamp_start,
-        })),
-        risks: (aiData?.risks || []).map((r: any, i: number) => ({
-          id: `r-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          risk_type: r.risk_type,
-          description: r.description,
-          is_ai_generated: r.is_ai_generated,
-          timestamp_start: r.timestamp_start,
-        })),
-        opportunities: (aiData?.opportunities || []).map((op: any, i: number) => ({
-          id: `op-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          category: op.category,
-          description: op.description,
-          timestamp_start: op.timestamp_start,
-        })),
-        values: (aiData?.values || []).map((v: any, i: number) => ({
-          id: `v-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          amount_formatted: v.amount_formatted,
-          numeric_value: v.numeric_value,
-          context: v.context,
-          timestamp_start: v.timestamp_start,
-          original_snippet: v.original_snippet,
-        })),
-        dates: (aiData?.dates || []).map((dt: any, i: number) => ({
-          id: `dt-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          original_text: dt.original_text,
-          context: dt.context,
-          timestamp_start: dt.timestamp_start,
-        })),
-        quotes: (aiData?.quotes || []).map((q: any, i: number) => ({
-          id: `q-${newMeetingId}-${i}`,
-          meeting_id: newMeetingId,
-          speaker: q.speaker,
-          phrase: q.phrase,
-          timestamp_start: q.timestamp_start,
-        })),
-        next_steps_agreed: aiData?.next_steps_agreed || [],
-        next_steps_ai_suggestions: aiData?.next_steps_ai_suggestions || [],
-      };
+          title: t.title,
+          description: t.description || "",
+          assignee: t.assignee || "Responsável não definido",
+          original_due_date_text: t.due_date_text || "Prazo não definido",
+          priority: t.priority || "Média",
+          status: "Pendente" as const,
+          timestamp_start: t.timestamp_start,
+          original_snippet: t.original_snippet,
+          created_at: new Date().toISOString(),
+          meeting_title: meetingTitle,
+        }));
 
-      saveLocalMeeting(finalDetails, result.canDiscardAudio);
+        return {
+          transcription_warning: result.transcriptionWarning,
+          meeting: {
+            id: newMeetingId,
+            user_id: activeAccount?.id || "u-001",
+            user_email: activeAccount?.email,
+            title: meetingTitle,
+            description: result.participants ? `Participantes informados: ${result.participants}.` : "Gravação recuperada.",
+            meeting_date: sessionSnapshot.started_at || new Date().toISOString(),
+            duration_seconds: duration,
+            source_type: sessionSnapshot.source_type || "recording",
+            status: "CONCLUIDA",
+            error_message: null,
+            tags: ["Recuperada", "Salva na Conta"],
+            created_at: sessionSnapshot.started_at || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            tasks_count: formattedTasks.length,
+            decisions_count: (aiData?.decisions || []).length,
+            highlights_count: (aiData?.highlights || []).length,
+          },
+          transcript: {
+            id: `t-${newMeetingId}`,
+            meeting_id: newMeetingId,
+            raw_text: rawTextDraft,
+            speaker_map: result.speakerMap || { "Participante 1": "Participante 1" },
+            segments: segmentsDraft.map((s: any, i: number) => ({
+              id: `seg-${newMeetingId}-${i}`,
+              transcript_id: `t-${newMeetingId}`,
+              meeting_id: newMeetingId,
+              start_time: s.start_time || 0,
+              end_time: s.end_time || duration || 5,
+              speaker: s.speaker || "Participante 1",
+              text: s.text || rawTextDraft,
+            })),
+          },
+          summary: aiData
+            ? {
+                id: `sum-${newMeetingId}`,
+                meeting_id: newMeetingId,
+                objective: aiData.objective,
+                key_topics: aiData.key_topics || [],
+                conclusions: aiData.conclusions,
+                final_status: aiData.final_status || "Concluída",
+              }
+            : undefined,
+          highlights: (aiData?.highlights || []).map((h: any, i: number) => ({
+            id: `h-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            description: h.description,
+            timestamp_start: h.timestamp_start,
+            original_snippet: h.original_snippet,
+          })),
+          decisions: (aiData?.decisions || []).map((d: any, i: number) => ({
+            id: `d-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            decision_text: d.decision_text,
+            timestamp_start: d.timestamp_start,
+            original_snippet: d.original_snippet,
+          })),
+          tasks: formattedTasks,
+          pending_items: (aiData?.pending_items || []).map((p: any, i: number) => ({
+            id: `p-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            item_text: p.item_text,
+            timestamp_start: p.timestamp_start,
+          })),
+          risks: (aiData?.risks || []).map((r: any, i: number) => ({
+            id: `r-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            risk_type: r.risk_type,
+            description: r.description,
+            is_ai_generated: r.is_ai_generated,
+            timestamp_start: r.timestamp_start,
+          })),
+          opportunities: (aiData?.opportunities || []).map((op: any, i: number) => ({
+            id: `op-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            category: op.category,
+            description: op.description,
+            timestamp_start: op.timestamp_start,
+          })),
+          values: (aiData?.values || []).map((v: any, i: number) => ({
+            id: `v-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            amount_formatted: v.amount_formatted,
+            numeric_value: v.numeric_value,
+            context: v.context,
+            timestamp_start: v.timestamp_start,
+            original_snippet: v.original_snippet,
+          })),
+          dates: (aiData?.dates || []).map((dt: any, i: number) => ({
+            id: `dt-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            original_text: dt.original_text,
+            context: dt.context,
+            timestamp_start: dt.timestamp_start,
+          })),
+          quotes: (aiData?.quotes || []).map((q: any, i: number) => ({
+            id: `q-${newMeetingId}-${i}`,
+            meeting_id: newMeetingId,
+            speaker: q.speaker,
+            phrase: q.phrase,
+            timestamp_start: q.timestamp_start,
+          })),
+          next_steps_agreed: aiData?.next_steps_agreed || [],
+          next_steps_ai_suggestions: aiData?.next_steps_ai_suggestions || [],
+        };
+      }
+
+      const draft = buildDetails(null);
+      const existing = getLocalMeetings().find(({ meeting }) => meeting.id === newMeetingId);
+      const checkpoint = existing
+        ? { ...existing, meeting: { ...existing.meeting, ...draft.meeting }, transcript: draft.transcript, transcription_warning: draft.transcription_warning }
+        : draft;
+      saveLocalMeeting(checkpoint, result.canDiscardAudio);
+      setFinishMessage("Reunião salva. Preparando o resumo…");
+      if (rawTextDraft.trim()) {
+        try {
+          const analysis = await processAIAnalysis(rawTextDraft, segmentsDraft);
+          saveLocalMeeting({ ...buildDetails(analysis), support_materials: checkpoint.support_materials });
+        } catch {
+          // O áudio e a transcrição já foram preservados no aparelho.
+        }
+      }
       setShowConfirmModal(false);
       setActiveSession(null);
       router.push(`/meetings/${newMeetingId}`);
     } catch (err) {
       console.error("Erro ao encerrar reunião:", err);
+      setFinishError("Não foi possível finalizar. Os trechos já gravados continuam neste aparelho. Tente Recuperar e Salvar novamente.");
     } finally {
       setIsFinishing(false);
     }
@@ -259,7 +279,7 @@ export function ActiveMeetingBanner() {
               </div>
             )}
 
-            {syncInfo.isSyncing || syncInfo.pendingCount > 0 ? (
+            {!isInterrupted && (syncInfo.isSyncing || syncInfo.pendingCount > 0) ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-500/20 border border-sky-500/30 text-sky-200 text-[11px] font-semibold">
                 <Cloud className="w-3 h-3 text-sky-300 animate-pulse" />
                 <span>☁️ Sincronizando áudio ({syncInfo.syncedCount}/{totalChunks})</span>
@@ -267,7 +287,7 @@ export function ActiveMeetingBanner() {
             ) : totalChunks > 0 ? (
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-200 text-[11px] font-semibold">
                 <CheckCircle2 className="w-3 h-3 text-emerald-300" />
-                <span>✅ Gravação salva ({totalChunks} seg.)</span>
+                <span>{totalChunks} trechos guardados neste aparelho</span>
               </span>
             ) : null}
 
@@ -343,10 +363,12 @@ export function ActiveMeetingBanner() {
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Todos os trechos de áudio salvos periodicamente no IndexedDB serão consolidados para gerar a transcrição completa e o resumo por IA na sua conta.
+              O sistema tentará transcrever o áudio disponível neste aparelho. Trechos que o microfone não capturou ficam fora do texto.
             </p>
 
-            <div className="flex items-center justify-end gap-3 pt-2">
+            {isFinishing && <p role="status" className="text-sm text-indigo-200">{finishMessage}</p>}
+            {finishError && <p role="alert" className="text-sm text-rose-200">{finishError}</p>}
+            <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
               <button
                 disabled={isFinishing}
                 onClick={() => setShowConfirmModal(false)}

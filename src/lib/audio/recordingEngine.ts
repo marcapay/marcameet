@@ -19,7 +19,8 @@ import {
 } from "@/lib/recording/chunkStore";
 import {
   processUploadQueue,
-  destroyUploader,
+  suspendUploadQueue,
+  resumeUploadQueue,
   subscribeUploaderState,
   UploaderSyncState,
 } from "@/lib/recording/chunkUploader";
@@ -563,9 +564,6 @@ class RecordingEngineService {
             );
           }
 
-          // Drenar eventuais chunks pendentes salvos no IndexedDB antes da interrupção
-          this.triggerUploadQueue();
-
           this.startTimerLoop();
           this.startSyncHeartbeat();
           this.startWatchdogLoop();
@@ -830,6 +828,7 @@ class RecordingEngineService {
       }
     };
 
+    resumeUploadQueue(meetingId);
     recorder.start(CHUNK_DURATION_MS);
     void requestScreenWakeLock();
 
@@ -989,7 +988,8 @@ class RecordingEngineService {
   }
 
   public triggerUploadQueue() {
-    if (!this.activeSession) return;
+    if (!this.activeSession || this.activeSession.recorder_status !== "recording" ||
+      this.activeSession.status === "finishing" || this.activeSession.status === "interrupted") return;
     const meetingId = this.activeSession.meeting_id;
 
     void processUploadQueue({
@@ -1390,21 +1390,12 @@ class RecordingEngineService {
     console.log("🏁 [RecordingEngine] Encerrando gravação e consolidando segmentos:", finalMeetingId);
 
     this.activeSession.status = "finishing";
+    suspendUploadQueue(finalMeetingId);
     this.notifyStatusChange();
 
     // 1. Limpar recursos e aguardar último bloco de áudio do MediaRecorder
     await this.cleanupRecordingResources();
     await Promise.all(this.pendingChunkWrites);
-
-    // 2. Drenar e transcrever todos os chunks pendentes no IndexedDB ANTES de ler a transcrição final
-    await processUploadQueue({
-      targetSessionId: finalMeetingId,
-      onChunkTranscribed: (text, segments, sequenceNumber) => {
-        this.handleChunkTranscriptionResult(text, segments, sequenceNumber);
-      },
-    });
-
-    destroyUploader();
 
     let finalTranscript = this.activeSession.transcript_draft || "";
     let finalSpeakerMap = this.activeSession.speaker_map || { "Participante 1": "Participante 1" };
@@ -1413,7 +1404,7 @@ class RecordingEngineService {
     let processedSeconds: number | undefined;
     try {
       const chunks = await getAllSessionChunksOrdered(finalMeetingId);
-      if (chunks.length && hasConfiguredApiKey()) {
+      if (chunks.length && (typeof navigator === "undefined" || navigator.onLine) && hasConfiguredApiKey()) {
         const mimeType = chunks[0].mimeType || "audio/webm";
         const audio = new Blob(chunks.map((chunk) => chunk.blob), { type: mimeType });
         const useBatches = audio.size >= 24 * 1024 * 1024 && Boolean(getActiveApiKeys().openaiKey);
@@ -1499,7 +1490,9 @@ class RecordingEngineService {
     if (this.activeSession) {
       this.activeSession.status = "finishing";
       const meetingId = this.activeSession.meeting_id;
+      suspendUploadQueue(meetingId);
       await this.cleanupRecordingResources();
+      await Promise.all(this.pendingChunkWrites);
       await closeActiveMeetingInSupabase(meetingId);
       await clearActiveSessionInIndexedDB(meetingId);
       await clearSessionChunks(meetingId);

@@ -862,7 +862,7 @@ export async function closeActiveMeetingInSupabase(meetingId: string): Promise<b
         ended_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
-      .eq('meeting_id', meetingId);
+      .eq('meeting_id', meetingId).abortSignal(AbortSignal.timeout(8000));
 
     return !error;
   } catch {

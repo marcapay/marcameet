@@ -467,7 +467,7 @@ export default function RecordPage() {
             )
           )}
 
-          {isRecording && (syncInfo.isSyncing || syncInfo.pendingCount > 0) && (
+          {isRecording && !sourceEnded && (syncInfo.isSyncing || syncInfo.pendingCount > 0) && (
             <span className="px-3 py-1 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/30 text-xs font-bold flex items-center gap-1.5">
               <span>☁️ Sincronizando áudio</span>
             </span>
@@ -663,7 +663,7 @@ export default function RecordPage() {
                 {sourceEnded ? "⚠️ Captura interrompida" : isPaused ? "⏸️ Pausado" : "🔴 Gravando"}
               </span>
 
-              {syncInfo.isSyncing || syncInfo.pendingCount > 0 ? (
+              {!sourceEnded && (syncInfo.isSyncing || syncInfo.pendingCount > 0) ? (
                 <span className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-sky-500/20 text-sky-200 border border-sky-500/30 text-xs font-bold">
                   <Cloud className="w-3.5 h-3.5 animate-pulse" />
                   <span>☁️ Sincronizando áudio</span>
@@ -680,7 +680,7 @@ export default function RecordPage() {
           </div>
 
           {/* Indicador Discreto de Wake Lock + Contagem de Segmentos no IndexedDB */}
-          <WakeLockStatusBadge isRecording={isRecording} savedChunksCount={totalChunksSaved} />
+          <WakeLockStatusBadge isRecording={isRecording && !sourceEnded} savedChunksCount={totalChunksSaved} />
 
           {/* Equalizador Visual de Gravação */}
           {!isPaused && !sourceEnded && (

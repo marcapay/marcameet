@@ -26,6 +26,7 @@ import { CompleteMeetingDetails } from "@/types/database";
 import { MeetingBoards } from "@/components/meetings/MeetingBoards";
 import { MeetingMaterials } from "@/components/meetings/MeetingMaterials";
 import { TranscriptPreview } from "@/components/meetings/TranscriptPreview";
+import { recordingEngine } from "@/lib/audio/recordingEngine";
 import { MeetingChat } from "@/components/meetings/MeetingChat";
 import { ensureValidUuid } from "@/lib/supabase/client";
 import Link from "next/link";
@@ -37,6 +38,7 @@ export default function MeetingDetailPage() {
 
   const [details, setDetails] = useState<CompleteMeetingDetails | null>(null);
   const [activeTab, setActiveTab] = useState<"summary" | "transcript" | "import" | "export">("summary");
+  const [recoverableHere, setRecoverableHere] = useState(false);
   const [loadSlow, setLoadSlow] = useState(false);
   
   const [openMaterialsChat, setOpenMaterialsChat] = useState(false);
@@ -68,10 +70,18 @@ export default function MeetingDetailPage() {
     setLoadSlow(false);
     load(getLocalMeetings());
     const unsubscribe = subscribeLocalMeetings(load);
+    const updateActive = () => {
+      const current = recordingEngine.getActiveSession();
+      setRecoverableHere(Boolean(current && ensureValidUuid(current.meeting_id) === canonicalId &&
+        current.status !== "finished" && current.status !== "idle"));
+    };
+    updateActive();
+    const unsubscribeActive = recordingEngine.subscribe({ onStatusChange: updateActive });
     const timeout = setTimeout(() => setLoadSlow(true), 5000);
     return () => {
       clearTimeout(timeout);
       unsubscribe();
+      unsubscribeActive();
     };
   }, [id]);
 
@@ -94,7 +104,8 @@ export default function MeetingDetailPage() {
       <div className="p-12 text-center space-y-4">
         <Sparkles className="w-10 h-10 text-indigo-400 mx-auto animate-spin" />
         <p role="status" className="text-sm font-medium text-slate-300">
-          {loadSlow ? "A reunião ainda não está disponível neste aparelho." : "Carregando detalhes da reunião…"}
+          {recoverableHere ? "Há uma gravação pendente de finalização neste aparelho. Use Recuperar e Salvar no aviso acima para abrir a transcrição."
+            : loadSlow ? "A reunião ainda não está disponível neste aparelho." : "Carregando detalhes da reunião…"}
         </p>
         <Link href="/meetings" className="inline-flex min-h-11 items-center text-indigo-300">Voltar para Minhas Reuniões</Link>
       </div>
