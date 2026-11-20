@@ -4,6 +4,7 @@ import { useState } from "react";
 import { ChevronDown, Edit2, Plus, Trash2 } from "lucide-react";
 import { getLocalMeetings, saveLocalMeeting } from "@/lib/storage/mockStorage";
 import type { CompleteMeetingDetails, MeetingBoardKey, MeetingTask, TaskStatus } from "@/types/database";
+import { QuestionDictation } from "./QuestionDictation";
 import { MeetingMaterials } from "./MeetingMaterials";
 
 const boards: { key: MeetingBoardKey; title: string; color: string }[] = [
@@ -40,6 +41,7 @@ function MeetingBoard({ details, board, onTimestamp }: {
   board: (typeof boards)[number];
   onTimestamp: (seconds: number) => void;
 }) {
+  const [dictating, setDictating] = useState(false);
   const [editing, setEditing] = useState<BoardItem | null>(null);
   const [taskDetails, setTaskDetails] = useState({ assignee: "", due: "", description: "" });
   const items = getItems(details, board.key);
@@ -125,17 +127,26 @@ function MeetingBoard({ details, board, onTimestamp }: {
               <button type="button" onClick={() => {
                 if (!window.confirm("Excluir este item do quadro?")) return;
                 persist((current) => ({ ...current, [board.key]: current[board.key].filter((entry) => entry.id !== item.id) }));
-                if (editing?.id === item.id) setEditing(null);
+                if (editing?.id === item.id) { setEditing(null); setDictating(false); }
               }} className="inline-flex min-h-10 items-center gap-1 text-rose-300"><Trash2 className="h-3.5 w-3.5" /> Excluir</button>
             </div>
           </div>
         ))}
         {editing ? (
           <form onSubmit={(event) => { event.preventDefault(); save(); }} className="space-y-2">
-            <label className="block text-sm text-slate-200">
-              {board.key === "tasks" ? "Título da tarefa" : "Texto do item"}
-              <textarea className={fieldClass} value={editing.text} required onChange={(event) => setEditing({ ...editing, text: event.target.value })} />
-            </label>
+            <div>
+              <label className="block text-sm text-slate-200" htmlFor={`board-text-${board.key}`}>
+                {board.key === "tasks" ? "Título da tarefa" : "Texto do item"}
+              </label>
+              <div className="relative">
+                <textarea id={`board-text-${board.key}`} className={`${fieldClass} block min-h-16 pr-28`}
+                  value={editing.text} required onChange={(event) => setEditing({ ...editing, text: event.target.value })} />
+                <QuestionDictation label="Ditar texto do item" buttonClassName="absolute right-14 top-2"
+                  disabled={false} onListening={setDictating}
+                  onText={(text) => setEditing((item) => item ? { ...item, text: [item.text.trimEnd(), text].filter(Boolean).join(" ") } : null)} />
+                <MeetingMaterials details={details} board={board.key} compact pickerClassName="absolute right-2 top-2" />
+              </div>
+            </div>
             {board.key === "tasks" && (
               <>
                 <label className="block text-sm text-slate-200">Descrição da tarefa
@@ -150,8 +161,8 @@ function MeetingBoard({ details, board, onTimestamp }: {
               </>
             )}
             <div className="flex gap-3">
-              <button type="submit" className="min-h-11 rounded-xl bg-indigo-600 px-4 text-sm text-white">Salvar item</button>
-              <button type="button" onClick={() => setEditing(null)} className="min-h-11 px-2 text-sm text-slate-300">Cancelar</button>
+              <button type="submit" disabled={dictating} className="min-h-11 rounded-xl bg-indigo-600 disabled:opacity-50 px-4 text-sm text-white">Salvar item</button>
+              <button type="button" onClick={() => { setEditing(null); setDictating(false); }} className="min-h-11 px-2 text-sm text-slate-300">Cancelar</button>
             </div>
           </form>
         ) : (
@@ -160,7 +171,7 @@ function MeetingBoard({ details, board, onTimestamp }: {
             <Plus className="h-4 w-4" /> Incluir item
           </button>
         )}
-        <MeetingMaterials details={details} board={board.key} />
+        <MeetingMaterials details={details} board={board.key} hidePicker={Boolean(editing)} />
       </div>
     </details>
   );
