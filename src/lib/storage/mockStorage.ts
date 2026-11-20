@@ -144,15 +144,19 @@ function isAnonymousUserId(userId?: string): boolean {
   return !userId || userId === "u-001" || userId === "anonymous" || userId === "guest";
 }
 
+function withoutLocalMaterials(details: CompleteMeetingDetails): CompleteMeetingDetails {
+  const { support_materials: _localMaterials, ...syncedDetails } = details;
+  return syncedDetails;
+}
+
 function mergeMeetingEntries(a: CompleteMeetingDetails, b: CompleteMeetingDetails): CompleteMeetingDetails {
   const aHasSummary = Boolean(a.summary?.objective);
   const bHasSummary = Boolean(b.summary?.objective);
-  if (bHasSummary && !aHasSummary) return b;
-  if (aHasSummary && !bHasSummary) return a;
-
   const aTime = new Date(a.meeting.updated_at || a.meeting.meeting_date || 0).getTime();
   const bTime = new Date(b.meeting.updated_at || b.meeting.meeting_date || 0).getTime();
-  return bTime >= aTime ? b : a;
+  const latest = aHasSummary === bHasSummary ? (bTime >= aTime ? b : a) : (bHasSummary ? b : a);
+  const localMaterials = b.support_materials ?? a.support_materials;
+  return localMaterials ? { ...latest, support_materials: localMaterials } : latest;
 }
 
 function meetingItems<T>(value: T[] | null | undefined): T[] {
@@ -312,7 +316,7 @@ function adoptAnonymousMeetingsForAccount(account: UserAccount): boolean {
         };
         allMeetingsMap.set(id, updated);
         saveCompletedMeetingToIndexedDB(updated).catch(() => {});
-        saveMeetingToSupabase(updated).catch(() => {});
+        saveMeetingToSupabase(withoutLocalMaterials(updated)).catch(() => {});
         adoptedAny = true;
       }
     }
@@ -368,7 +372,7 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
         ai_gemini_key: getStoredKey("ai_gemini_key") || undefined,
         ai_groq_key: getStoredKey("ai_groq_key") || undefined,
         account: account || undefined,
-        meetings: localListForSync,
+        meetings: localListForSync.map(withoutLocalMaterials),
       }),
     });
 
@@ -402,7 +406,7 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
       const localBeforePull = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
       await Promise.all(
         localBeforePull.slice(0, 30).map((m) =>
-          saveMeetingToSupabase(m).catch(() => false)
+          saveMeetingToSupabase(withoutLocalMaterials(m)).catch(() => false)
         )
       );
 
@@ -548,7 +552,7 @@ export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecorde
     .catch((err) => console.warn("Falha ao salvar a reunião ou limpar o áudio temporário:", err));
 
   // 4. Sincronizar criação/atualização no Supabase e no /api/cloud-sync
-  saveMeetingToSupabase(enrichedDetails).catch((err) =>
+  saveMeetingToSupabase(withoutLocalMaterials(enrichedDetails)).catch((err) =>
     console.warn("Falha na sincronização assíncrona com Supabase:", err)
   );
 
@@ -556,7 +560,7 @@ export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecorde
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      meetings: [enrichedDetails],
+      meetings: [withoutLocalMaterials(enrichedDetails)],
     }),
   }).catch(() => {});
 }
@@ -674,7 +678,7 @@ export async function importMeetingsBackupJson(
       };
       upsertIntoMeetingsMap(enriched);
       await saveCompletedMeetingToIndexedDB(enriched);
-      saveMeetingToSupabase(enriched).catch(() => {});
+      saveMeetingToSupabase(withoutLocalMaterials(enriched)).catch(() => {});
       importedCount++;
     }
   }

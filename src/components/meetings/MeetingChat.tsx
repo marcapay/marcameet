@@ -2,9 +2,10 @@
 
 import { useRef, useState, type FormEvent } from "react";
 import { MessageSquare, Send, UserCheck } from "lucide-react";
+import { MeetingMaterials } from "./MeetingMaterials";
 import { QuestionDictation } from "./QuestionDictation";
 import { MeetingAnswer } from "./MeetingAnswer";
-import { askMeetingAI, type MeetingChatMessage } from "@/lib/ai";
+import { askMeetingAI, askMeetingMaterialsWithOpenAI, type MeetingChatMessage } from "@/lib/ai";
 import type { CompleteMeetingDetails } from "@/types/database";
 
 const executivePrompts = [
@@ -22,10 +23,12 @@ interface MeetingChatProps {
   details: CompleteMeetingDetails;
   executive?: boolean;
   voiceComposer?: boolean;
+  openMaterials?: boolean;
   onTimestamp?: (seconds: number) => void;
 }
 
-function Conversation({ details, executive, voiceComposer, onTimestamp }: MeetingChatProps) {
+function Conversation({ details, executive, voiceComposer, openMaterials, onTimestamp }: MeetingChatProps) {
+  const [consultMaterials, setConsultMaterials] = useState(Boolean(openMaterials));
   const [question, setQuestion] = useState("");
   const historyKey = `marca-reunioes-chat-v1:${details.meeting.user_id}:${details.meeting.id}`;
   const [messages, setMessages] = useState<MeetingChatMessage[]>(() => {
@@ -45,7 +48,7 @@ function Conversation({ details, executive, voiceComposer, onTimestamp }: Meetin
   const [error, setError] = useState("");
   const ready = Boolean(
     details.transcript?.segments?.some((segment) => segment.text?.trim()) ||
-    details.transcript?.raw_text?.trim() || details.summary?.objective || details.decisions?.length || details.tasks?.length
+    details.transcript?.raw_text?.trim() || details.support_materials?.length || details.summary?.objective || details.decisions?.length || details.tasks?.length
   );
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -62,12 +65,15 @@ function Conversation({ details, executive, voiceComposer, onTimestamp }: Meetin
     setError("");
     setQuestion("");
     const timestamp = new Date().toISOString();
-    const message: MeetingChatMessage = { id: timestamp, role: "user", content, timestamp };
+    const scope = consultMaterials ? "materials" : undefined;
+    const message: MeetingChatMessage = { id: timestamp, role: "user", content, timestamp, scope };
     setMessages([...messages, message]);
     try {
-      const answer = await askMeetingAI(details, content, messages.slice(-20));
+      const answer = consultMaterials
+        ? await askMeetingMaterialsWithOpenAI(details, content, messages)
+        : await askMeetingAI(details, content, messages.filter((message) => message.scope !== "materials").slice(-20));
       const updated: MeetingChatMessage[] = [...messages, message, {
-        id: `${timestamp}-answer`, role: "assistant", content: answer, timestamp,
+        id: `${timestamp}-answer`, role: "assistant", content: answer, timestamp, scope,
       }];
       setMessages(updated.slice(-40));
       try {
@@ -75,9 +81,9 @@ function Conversation({ details, executive, voiceComposer, onTimestamp }: Meetin
       } catch {
         // A conversa continua disponível enquanto a página estiver aberta.
       }
-    } catch {
+    } catch (error) {
       setMessages(messages);
-      setError("Não foi possível responder agora. Tente novamente.");
+      setError(consultMaterials && error instanceof Error ? error.message : "Não foi possível responder agora. Tente novamente.");
       setQuestion(content);
     } finally {
       submitting.current = false;
@@ -91,6 +97,12 @@ function Conversation({ details, executive, voiceComposer, onTimestamp }: Meetin
         <MessageSquare className="h-5 w-5 text-indigo-300" aria-hidden="true" />
         {executive ? "Assistente executivo da reunião" : "Pergunte sobre esta reunião"}
       </h2>
+      {Boolean(details.support_materials?.length) && (
+        <label className="flex items-center gap-2 text-sm text-indigo-200">
+          <input type="checkbox" checked={consultMaterials} disabled={pending} onChange={(event) => setConsultMaterials(event.target.checked)} />
+          Incluir texto dos anexos na análise da OpenAI
+        </label>
+      )}
       <form onSubmit={submit} className="flex flex-wrap items-start gap-2">
         <input
           aria-label="Sua pergunta"
@@ -111,6 +123,7 @@ function Conversation({ details, executive, voiceComposer, onTimestamp }: Meetin
             setQuestion((value) => `${value.trim()} ${text}`.trim().slice(0, 2000));
           }
         }} />
+        {voiceComposer && <MeetingMaterials details={details} compact />}
         {voiceComposer && Object.keys(details.transcript?.speaker_map || {}).length > 0 && (
           <a href="#participantes" className="inline-flex min-h-11 items-center gap-1 px-1 text-xs font-semibold text-indigo-200">
             <UserCheck className="h-4 w-4" aria-hidden="true" />
@@ -120,7 +133,7 @@ function Conversation({ details, executive, voiceComposer, onTimestamp }: Meetin
         )}
       </form>
       {!ready && <p className="text-sm text-slate-400">O chat fica disponível quando houver transcrição, resumo ou decisões para consultar.</p>}
-      {pending && <p role="status" className="text-sm text-slate-300">Buscando na transcrição…</p>}
+      {pending && <p role="status" className="text-sm text-slate-300">Consultando a reunião…</p>}
       {error && <p role="alert" className="text-sm text-amber-200">{error}</p>}
       {executive && (
         <div className="flex flex-wrap gap-2" aria-label="Modelos de pedido">
