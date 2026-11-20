@@ -1,7 +1,5 @@
-"use client";
-
-import { MobileApp } from "@/components/mobile/MobileApp";
+import { redirect } from "next/navigation";
 
 export default function DashboardPage() {
-  return <MobileApp />;
+  redirect("/record");
 }

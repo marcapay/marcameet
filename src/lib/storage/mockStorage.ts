@@ -11,6 +11,7 @@ import {
   saveCompletedMeetingToIndexedDB,
   getCompletedMeetingsFromIndexedDB,
   deleteCompletedMeetingFromIndexedDB,
+  clearActiveSessionInIndexedDB,
   requestPersistentBrowserStorage,
 } from "@/lib/storage/indexedDbQueue";
 import { getCurrentAccount, subscribeAccountChange } from "@/lib/auth/accountSystem";
@@ -18,6 +19,99 @@ import { clearSessionChunks, deleteMeetingAudioBlob } from "@/lib/recording/chun
 import { getStoredKey, setStoredKey } from "@/lib/storage/keysStorage";
 
 const STORAGE_KEY_MEETINGS = "marcameet_meetings_v2";
+const DELETION_PREFIX = "marcameet_deleted_meeting_";
+const deletionRecords = new Map<string, { id: string; pending: boolean; requiresSupabase?: boolean }>();
+const pendingDeletes = new Map<string, Promise<boolean>>();
+
+function rememberDeletion(id: string, pending: boolean, requiresSupabase = false) {
+  const canonical = ensureValidUuid(id);
+  const entry = { id, pending, requiresSupabase };
+  deletionRecords.set(canonical, entry);
+  try { localStorage.setItem(DELETION_PREFIX + canonical, JSON.stringify(entry)); } catch {}
+}
+
+export function isDeletedMeeting(id: string) {
+  const key = ensureValidUuid(id);
+  if (deletionRecords.has(key)) return true;
+  try { return localStorage.getItem(DELETION_PREFIX + key) !== null; } catch { return false; }
+}
+
+function discardCachedMeeting(id: string) {
+  const canonical = ensureValidUuid(id);
+  const identities = new Set([id, canonical]);
+  for (const [key, meeting] of allMeetingsMap) {
+    if (ensureValidUuid(key) === canonical) {
+      identities.add(key);
+      identities.add(meeting.meeting.id);
+      allMeetingsMap.delete(key);
+    }
+  }
+  return identities;
+}
+
+async function removeMeetingFiles(ids: Iterable<string>) {
+  await Promise.all(Array.from(ids, async (id) => {
+    await Promise.all([
+      deleteCompletedMeetingFromIndexedDB(id),
+      clearActiveSessionInIndexedDB(id),
+      deleteMeetingAudioBlob(id),
+      clearSessionChunks(id),
+    ]);
+  }));
+}
+
+async function syncMeetingDeletion(id: string): Promise<boolean> {
+  const canonical = ensureValidUuid(id);
+  const ongoing = pendingDeletes.get(canonical);
+  if (ongoing) return ongoing;
+  const request = (async () => {
+    try {
+      const configured = isSupabaseConfigured();
+      const server = fetch("/api/cloud-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deletedMeetingId: id }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const [res, cloudDeleted] = await Promise.all([
+        server.catch(() => null),
+        configured ? deleteMeetingFromSupabase(id) : Promise.resolve(true),
+      ]);
+      if (!res?.ok || !cloudDeleted) return false;
+      rememberDeletion(id, !configured, !configured);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      pendingDeletes.delete(canonical);
+    }
+  })();
+  pendingDeletes.set(canonical, request);
+  return request;
+}
+
+async function retryMeetingDeletions() {
+  try {
+    for (let index = 0; index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(DELETION_PREFIX)) continue;
+      const entry = JSON.parse(localStorage.getItem(key) || "null");
+      if (typeof entry?.id === "string") deletionRecords.set(ensureValidUuid(entry.id), entry);
+    }
+  } catch {}
+  await Promise.all(Array.from(deletionRecords.values())
+    .filter(({ pending, requiresSupabase }) => pending && (!requiresSupabase || isSupabaseConfigured()))
+    .map(({ id }) => syncMeetingDeletion(id)));
+}
+
+function receiveMeetingDeletions(ids: unknown) {
+  if (!Array.isArray(ids)) return;
+  for (const id of ids) {
+    if (typeof id !== "string" || isDeletedMeeting(id)) continue;
+    rememberDeletion(id, false);
+    discardCachedMeeting(id);
+  }
+}
 const getAccountStorageKey = (accountId: string) => `marcameet_meetings_acc_${accountId}`;
 
 export const INITIAL_MOCK_MEETINGS: CompleteMeetingDetails[] = [];
@@ -98,7 +192,7 @@ function normalizeMeetingDetails(item: CompleteMeetingDetails): CompleteMeetingD
 }
 
 function upsertIntoMeetingsMap(input: CompleteMeetingDetails) {
-  if (!input?.meeting?.id || isLegacyMockMeeting(input)) return;
+  if (!input?.meeting?.id || isLegacyMockMeeting(input) || isDeletedMeeting(input.meeting.id)) return;
   const item = normalizeMeetingDetails(input);
   const canonicalUuid = ensureValidUuid(item.meeting.id);
 
@@ -126,7 +220,7 @@ function upsertIntoMeetingsMap(input: CompleteMeetingDetails) {
 }
 
 function filterMeetingsForCurrentUser(allList: CompleteMeetingDetails[], account: UserAccount | null): CompleteMeetingDetails[] {
-  const valid = allList.filter((m) => !isLegacyMockMeeting(m));
+  const valid = allList.filter((m) => !isLegacyMockMeeting(m) && !isDeletedMeeting(m.meeting.id));
 
   // Deduplicar por UUID canônico
   const dedupedMap = new Map<string, CompleteMeetingDetails>();
@@ -259,6 +353,7 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
   }
 
   let syncedCloud = false;
+  await retryMeetingDeletions();
 
   // 3. Sincronizar via /api/cloud-sync (compartilha chaves e reuniões instantaneamente entre celular e computador)
   try {
@@ -285,6 +380,8 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
       if (data.ai_gemini_key && !getStoredKey("ai_gemini_key")) setStoredKey("ai_gemini_key", data.ai_gemini_key);
       if (data.ai_groq_key && !getStoredKey("ai_groq_key")) setStoredKey("ai_groq_key", data.ai_groq_key);
 
+      receiveMeetingDeletions(data.deletedMeetingIds);
+      if (isSupabaseConfigured()) await retryMeetingDeletions();
       if (Array.isArray(data.meetings)) {
         for (const m of data.meetings) {
           upsertIntoMeetingsMap(m);
@@ -345,6 +442,10 @@ if (typeof window !== "undefined") {
       persistMeetingsToLocalStorage(account);
     }
     notifyListeners();
+    syncAccountMeetingsNow().catch(() => {});
+  });
+
+  window.addEventListener("online", () => {
     syncAccountMeetingsNow().catch(() => {});
   });
 
@@ -412,7 +513,7 @@ export function getLocalMeetings(): CompleteMeetingDetails[] {
 }
 
 export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecordedAudio = false): void {
-  if (typeof window === "undefined" || !details?.meeting?.id) return;
+  if (typeof window === "undefined" || !details?.meeting?.id || isDeletedMeeting(details.meeting.id)) return;
 
   const account = getCurrentAccount();
 
@@ -460,40 +561,18 @@ export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecorde
   }).catch(() => {});
 }
 
-export async function deleteLocalMeeting(meetingId: string): Promise<void> {
-  if (typeof window === "undefined") return;
-
-  const account = getCurrentAccount();
-  const targetUuid = ensureValidUuid(meetingId);
-
-  // 1. Excluir da memória (tanto pelo ID original quanto pelo UUID canônico)
-  allMeetingsMap.delete(meetingId);
-  allMeetingsMap.delete(targetUuid);
-  allMeetingsMap.forEach((_, k) => {
-    if (ensureValidUuid(k) === targetUuid) {
-      allMeetingsMap.delete(k);
-    }
-  });
-
-  persistMeetingsToLocalStorage(account);
+export async function deleteLocalMeeting(meetingId: string): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  rememberDeletion(meetingId, true);
+  const ids = discardCachedMeeting(meetingId);
+  persistMeetingsToLocalStorage(getCurrentAccount());
   notifyListeners();
 
-  // 2. Excluir do IndexedDB
-  await deleteCompletedMeetingFromIndexedDB(meetingId);
-  await deleteCompletedMeetingFromIndexedDB(targetUuid);
-  await deleteMeetingAudioBlob(meetingId);
-  await deleteMeetingAudioBlob(targetUuid);
-  await clearSessionChunks(meetingId);
-  if (targetUuid !== meetingId) await clearSessionChunks(targetUuid);
-
-  // 3. Excluir do /api/cloud-sync e do Supabase
-  fetch("/api/cloud-sync", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ deletedMeetingId: meetingId }),
-  }).catch(() => {});
-
-  await deleteMeetingFromSupabase(meetingId);
+  const [local, remote] = await Promise.allSettled([
+    removeMeetingFiles(ids),
+    syncMeetingDeletion(meetingId),
+  ]);
+  return local.status === "fulfilled" && remote.status === "fulfilled" && remote.value;
 }
 
 export function updateSpeakerNameInMeeting(meetingId: string, oldSpeaker: string, newSpeaker: string): CompleteMeetingDetails | null {

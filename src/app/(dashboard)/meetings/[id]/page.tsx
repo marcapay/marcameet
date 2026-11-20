@@ -244,9 +244,10 @@ export default function MeetingDetailPage() {
           </button>
 
           <button
-            onClick={() => {
+            onClick={async () => {
               if (confirm(`Tem certeza que deseja excluir a reunião "${meeting.title}"?`)) {
-                deleteLocalMeeting(meeting.id);
+                const completed = await deleteLocalMeeting(meeting.id);
+                if (!completed) alert("A exclusão foi iniciada neste aparelho. A sincronização será tentada novamente.");
                 router.push("/meetings");
               }
             }}

@@ -29,7 +29,8 @@ export default function MeetingsPage() {
     e.preventDefault();
     e.stopPropagation();
     if (confirm(`Tem certeza que deseja excluir a reunião "${title}"?`)) {
-      await deleteLocalMeeting(meetingId);
+      const completed = await deleteLocalMeeting(meetingId);
+      if (!completed) alert("A exclusão foi iniciada neste aparelho. A sincronização será tentada novamente.");
       reloadMeetings();
     }
   };

@@ -281,26 +281,24 @@ export async function deleteMeetingFromSupabase(meetingId: string): Promise<bool
   const client = getSupabaseClient();
   if (!client) return false;
 
-  const validMeetingUuid = ensureValidUuid(meetingId);
-
+  const canonicalId = ensureValidUuid(meetingId);
+  const targets = [
+    ["marcameet", "id"],
+    ["meetings", "id"],
+    ["active_meetings", "meeting_id"],
+    ["audio_chunks", "meeting_id"],
+  ];
   try {
-    const { error: errMarcameet } = await client
-      .from('marcameet')
-      .delete()
-      .in('id', [validMeetingUuid, meetingId]);
+    const results = await Promise.all(targets.map(async ([table, column]) => {
+      const { error } = await client.from(table).delete().eq(column, canonicalId);
+      if (error) return ["42P01", "PGRST205"].includes(error.code);
+      if (canonicalId === meetingId) return true;
 
-    if (!errMarcameet) {
-      return true;
-    }
-
-    const { error: errMeetings } = await client
-      .from('meetings')
-      .delete()
-      .in('id', [validMeetingUuid, meetingId]);
-
-    return !errMeetings;
-  } catch (err) {
-    console.error("Erro inesperado ao deletar reunião no Supabase:", err);
+      const { error: legacyError } = await client.from(table).delete().eq(column, meetingId);
+      return !legacyError || legacyError.code === "22P02";
+    }));
+    return results.every(Boolean);
+  } catch {
     return false;
   }
 }

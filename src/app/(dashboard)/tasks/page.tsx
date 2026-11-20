@@ -74,11 +74,11 @@ function TasksContent() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleDeleteMeeting = (meetingId: string, title: string) => {
+  const handleDeleteMeeting = async (meetingId: string, title: string) => {
     if (confirm(`Tem certeza que deseja excluir a reunião "${title}"?`)) {
-      deleteLocalMeeting(meetingId);
+      const completed = await deleteLocalMeeting(meetingId);
       reloadMeetings();
-      showToast("Reunião excluída com sucesso!");
+      showToast(completed ? "Reunião excluída." : "Exclusão iniciada. A sincronização será tentada novamente.");
     }
   };
 

@@ -36,7 +36,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import { getCurrentAccount } from "@/lib/auth/accountSystem";
-import { saveLocalMeeting } from "@/lib/storage/mockStorage";
+import { isDeletedMeeting, saveLocalMeeting } from "@/lib/storage/mockStorage";
 import {
   requestScreenWakeLock,
   releaseScreenWakeLock,
@@ -529,7 +529,7 @@ class RecordingEngineService {
           session = await fetchActiveMeetingFromSupabase();
         }
 
-        if (session && session.status !== "finished") {
+        if (session && session.status !== "finished" && !isDeletedMeeting(session.meeting_id)) {
           console.log("🔄 [RecordingEngine] Reunião interrompida/ativa detectada para recuperação:", session.meeting_id);
 
           // Recuperar estatísticas reais dos segmentos já armazenados no IndexedDB

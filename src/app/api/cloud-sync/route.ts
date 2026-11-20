@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { ensureValidUuid } from "@/lib/supabase/client";
 
 interface CloudSyncData {
   supa_url?: string;
@@ -11,6 +12,7 @@ interface CloudSyncData {
   accounts: Record<string, any>;
   meetings: Record<string, any>;
   chunks?: Record<string, any>;
+  deletedMeetingIds?: Record<string, true>;
   updated_at: string;
 }
 
@@ -64,6 +66,7 @@ export async function GET() {
     ai_groq_key: state.ai_groq_key || "",
     accounts: Object.values(state.accounts || {}),
     meetings: Object.values(state.meetings || {}),
+    deletedMeetingIds: Object.keys(state.deletedMeetingIds || {}),
     updated_at: state.updated_at,
   });
 }
@@ -136,23 +139,34 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    if (Array.isArray(body.meetings)) {
-      for (const m of body.meetings) {
-        if (m?.meeting?.id && m?.meeting?.title) {
-          state.meetings[m.meeting.id] = m;
+    const deleted = (state.deletedMeetingIds ??= {});
+    if (typeof body.deletedMeetingId === "string" && body.deletedMeetingId.length > 0 && body.deletedMeetingId.length <= 160) {
+      const deletedId = ensureValidUuid(body.deletedMeetingId);
+      deleted[deletedId] = true;
+      for (const key of Object.keys(state.meetings)) {
+        if (ensureValidUuid(key) === deletedId) delete state.meetings[key];
+      }
+      for (const [key, chunk] of Object.entries(state.chunks || {})) {
+        if (typeof chunk.sessionId === "string" && ensureValidUuid(chunk.sessionId) === deletedId) {
+          delete state.chunks![key];
         }
       }
     }
 
-    if (body.deletedMeetingId) {
-      delete state.meetings[body.deletedMeetingId];
+    if (Array.isArray(body.meetings)) {
+      for (const m of body.meetings) {
+        if (typeof m?.meeting?.id === "string" && m.meeting.title && !deleted[ensureValidUuid(m.meeting.id)]) {
+          state.meetings[m.meeting.id] = m;
+        }
+      }
     }
 
     if (body.chunk && body.chunk.id) {
       if (!state.chunks) state.chunks = {};
       const chunkId = String(body.chunk.id);
       const alreadyExists = Boolean(state.chunks[chunkId]);
-      if (!alreadyExists) {
+      const deletedSession = typeof body.chunk.sessionId === "string" && deleted[ensureValidUuid(body.chunk.sessionId)];
+      if (!alreadyExists && !deletedSession) {
         state.chunks[chunkId] = {
           id: chunkId,
           sessionId: body.chunk.sessionId,
@@ -180,6 +194,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       accounts: Object.values(state.accounts),
       meetings: Object.values(state.meetings),
+      deletedMeetingIds: Object.keys(deleted),
       supa_url: state.supa_url,
       supa_anon_key: state.supa_anon_key,
       ai_openai_key: state.ai_openai_key,
