@@ -27,6 +27,7 @@ import {
   InterruptionGap,
   VisualRecordingState,
 } from "@/types/database";
+import { QuestionDictation } from "@/components/meetings/QuestionDictation";
 import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 import {
@@ -43,6 +44,7 @@ export default function RecordPage() {
   const [title, setTitle] = useState("");
   const [participants, setParticipants] = useState("");
   const [dictating, setDictating] = useState(false);
+  const [dictatingDescription, setDictatingDescription] = useState(false);
   const [description, setDescription] = useState("");
 
   // Opções de gravação
@@ -574,18 +576,27 @@ export default function RecordPage() {
 
               {/* Campos Opcionais Antes da Gravação */}
               <div className="space-y-3 pt-2">
-                <MeetingTitleFields title={title} participants={participants} onTitle={setTitle} onParticipants={setParticipants} onListening={setDictating} />
+                <MeetingTitleFields title={title} participants={participants} onTitle={setTitle} onParticipants={setParticipants} onListening={setDictating} disabled={dictatingDescription} />
 
                 <div>
                   <label htmlFor="record-description" className="block text-xs font-semibold text-slate-300 mb-1">Descrição</label>
-                  <textarea
-                    id="record-description"
-                    rows={2}
-                    placeholder="Breve descrição dos objetivos..."
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500 transition-colors resize-none"
-                  />
+                  <div className="relative">
+                    <textarea
+                      id="record-description"
+                      rows={2}
+                      placeholder="Breve descrição dos objetivos..."
+                      value={description}
+                      onChange={(e) => setDescription(e.target.value)}
+                      className="block w-full rounded-xl border border-slate-800 bg-slate-900 py-2.5 pl-4 pr-16 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                    />
+                    <QuestionDictation
+                      label="Ditar descrição"
+                      buttonClassName="absolute right-2 top-2"
+                      disabled={dictating}
+                      onListening={setDictatingDescription}
+                      onText={(text) => setDescription((current) => [current.trimEnd(), text].filter(Boolean).join(" "))}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -593,7 +604,7 @@ export default function RecordPage() {
             <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-rose-600 to-indigo-600 p-1 mx-auto shadow-xl shadow-rose-600/30">
               <button
                 onClick={startRecording}
-                disabled={dictating}
+                disabled={dictating || dictatingDescription}
                 className="w-full h-full rounded-full bg-slate-950 hover:bg-rose-600/20 flex items-center justify-center border border-rose-500/50 transition-all transform hover:scale-105 active:scale-95 group focus:outline-none"
               >
                 <Mic className="w-10 h-10 text-rose-500 group-hover:text-white transition-colors" />
@@ -603,7 +614,7 @@ export default function RecordPage() {
             <div className="space-y-2 max-w-md mx-auto">
               <button
                 onClick={startRecording}
-                disabled={dictating}
+                disabled={dictating || dictatingDescription}
                 className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-extrabold text-lg shadow-lg shadow-rose-600/25 transition-all transform hover:-translate-y-0.5 active:scale-95"
               >
                 INICIAR GRAVAÇÃO

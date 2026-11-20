@@ -14,10 +14,13 @@ interface Recognition {
   abort(): void;
 }
 
-export function QuestionDictation({ onText, disabled, sendOnEnd = false }: {
+export function QuestionDictation({ onText, disabled, sendOnEnd = false, label: idleLabel, buttonClassName, onListening }: {
   onText: (text: string) => void;
   disabled: boolean;
   sendOnEnd?: boolean;
+  label?: string;
+  buttonClassName?: string;
+  onListening?: (listening: boolean) => void;
 }) {
   const current = useRef<Recognition | null>(null);
   const [listening, setListening] = useState(false);
@@ -48,6 +51,7 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false }: {
       if (current.current !== recognition) return;
       current.current = null;
       setListening(false);
+      onListening?.(false);
     };
     let captured = "";
     recognition.lang = "pt-BR";
@@ -80,6 +84,7 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false }: {
     current.current = recognition;
     setStatus(sendOnEnd ? "Ouvindo… toque novamente no microfone para enviar." : "Ouvindo…");
     setListening(true);
+    onListening?.(true);
     try {
       recognition.start();
     } catch {
@@ -87,14 +92,14 @@ export function QuestionDictation({ onText, disabled, sendOnEnd = false }: {
     }
   }
 
-  const label = listening ? (sendOnEnd ? "Encerrar e enviar pergunta" : "Parar ditado") : (sendOnEnd ? "Perguntar por voz" : "Ditar mensagem");
+  const label = listening ? (sendOnEnd ? "Encerrar e enviar pergunta" : "Parar ditado") : (idleLabel ?? (sendOnEnd ? "Perguntar por voz" : "Ditar mensagem"));
 
   return (
     <>
       <button type="button" onClick={toggle} disabled={disabled && !listening}
         aria-label={label}
         title={label}
-        className={`inline-flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border disabled:opacity-50 ${
+        className={`inline-flex min-h-11 w-11 shrink-0 items-center justify-center rounded-xl border disabled:opacity-50 ${buttonClassName ?? ""} ${
           listening
             ? "border-red-400 bg-red-600 text-white motion-safe:animate-pulse"
             : "border-emerald-500/70 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30"
