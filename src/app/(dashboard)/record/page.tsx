@@ -48,7 +48,6 @@ export default function RecordPage() {
   const [tagsInput, setTagsInput] = useState("Presencial, Alinhamento");
 
   // Opções de gravação
-  const [wakeLockEnabled, setWakeLockEnabled] = useState(true);
 
   // Estado da Gravação & Engine
   const [isRecording, setIsRecording] = useState(false);
@@ -175,7 +174,6 @@ export default function RecordPage() {
         participants: participants.trim(),
         sourceType: "recording",
         stream,
-        wakeLockEnabled,
         chunkIntervalMs: 5000,
       });
 
@@ -590,28 +588,17 @@ export default function RecordPage() {
             </div>
           </div>
 
-          {/* Opções de Resiliência e Wake Lock */}
+          {/* Configuração da reunião */}
           <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-800/80 pb-3">
-              <div className="flex items-center gap-2">
-                <Smartphone className="w-4 h-4 text-indigo-400" />
-                <h2 className="text-sm font-bold text-slate-200">Evitar que a tela apague</h2>
+            <div className="flex items-start gap-2 border-b border-slate-800/80 pb-3">
+              <Smartphone className="mt-0.5 w-4 h-4 shrink-0 text-indigo-400" aria-hidden="true" />
+              <div>
+                <h2 className="text-sm font-bold text-slate-200">Proteção automática da tela</h2>
+                <p className="text-xs leading-relaxed text-slate-400">
+                  Durante a gravação, o sistema pede ao navegador que mantenha a tela ligada enquanto esta aba estiver visível.
+                </p>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  aria-label="Evitar que a tela apague"
-                  aria-describedby="screen-wake-help"
-                  checked={wakeLockEnabled}
-                  onChange={(e) => setWakeLockEnabled(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
-              </label>
             </div>
-            <p id="screen-wake-help" className="text-xs leading-relaxed text-slate-400">
-              Pede ao navegador que mantenha a tela ligada enquanto esta aba estiver visível.
-            </p>
 
             {/* Campos Opcionais Antes da Gravação */}
             <div className="space-y-3 pt-2">

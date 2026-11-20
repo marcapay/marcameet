@@ -110,7 +110,6 @@ class RecordingEngineService {
   private syncInterval: NodeJS.Timeout | null = null;
   private watchdogInterval: NodeJS.Timeout | null = null;
   private memoryMonitorInterval: NodeJS.Timeout | null = null;
-  private wakeLockEnabled: boolean = true;
   private microphoneRecovery: Promise<void> | null = null;
   private lastSavedMeetingId: string | null = null;
 
@@ -440,8 +439,8 @@ class RecordingEngineService {
           this.activeSession.status = "recording";
         }
 
-        if (this.wakeLockEnabled && this.activeSession.recorder_status === "recording") {
-          await requestScreenWakeLock();
+        if (isHealthy && this.activeSession.recorder_status === "recording") {
+          void requestScreenWakeLock();
         }
 
         await this.syncWithBackendAndLocal();
@@ -453,8 +452,11 @@ class RecordingEngineService {
     const handleWindowFocusOrShow = () => {
       if (!this.activeSession || this.activeSession.status === "finished") return;
       this.notifyTimerTick(this.getElapsedSeconds());
-      this.verifyCaptureHealth();
-      if (this.wakeLockEnabled && document.visibilityState === "visible") {
+      const isHealthy = this.verifyCaptureHealth();
+      if (document.visibilityState !== "visible") return;
+      if (!isHealthy) {
+        void this.recoverMicrophone(true).catch(console.warn);
+      } else if (this.activeSession.recorder_status === "recording") {
         void requestScreenWakeLock();
       }
     };
@@ -609,11 +611,10 @@ class RecordingEngineService {
     title: string;
     sourceType: MeetingSourceType;
     stream: MediaStream;
-    wakeLockEnabled?: boolean;
     chunkIntervalMs?: number;
     participants?: string;
   }): Promise<ActiveMeetingSessionState> {
-    const { meetingId, title, sourceType, stream, wakeLockEnabled = true } = params;
+    const { meetingId, title, sourceType, stream } = params;
 
     this.lastSavedMeetingId = null;
 
@@ -687,7 +688,7 @@ class RecordingEngineService {
       accumulated_paused_ms: existingPausedMs,
       paused_at_ms: undefined,
       auto_paused_reason: null,
-      wake_lock_enabled: wakeLockEnabled,
+      wake_lock_enabled: true,
       transcript_draft: isResumingInterrupted ? this.activeSession!.transcript_draft || "" : "",
       speaker_map: isResumingInterrupted
         ? this.activeSession!.speaker_map || { "Participante 1": "Participante 1" }
@@ -715,11 +716,6 @@ class RecordingEngineService {
 
     this.activeSession = sessionState;
     this.mediaStream = stream;
-    this.wakeLockEnabled = wakeLockEnabled;
-
-    if (wakeLockEnabled) {
-      await requestScreenWakeLock();
-    }
     startAudioKeepAlive();
 
     // Requisito 1: Monitorar os eventos mute, unmute, ended e error das trilhas de áudio
@@ -828,6 +824,7 @@ class RecordingEngineService {
     };
 
     recorder.start(CHUNK_DURATION_MS);
+    void requestScreenWakeLock();
 
     await this.persistCurrentState();
     this.startTimerLoop();
@@ -1205,9 +1202,7 @@ class RecordingEngineService {
       this.activeSession.status = document.visibilityState === "hidden" ? "background" : "recording";
       this.activeSession.auto_paused_reason = null;
       this.activeSession.last_chunk_at_ms = Date.now();
-      if (this.wakeLockEnabled) {
-        void requestScreenWakeLock();
-      }
+      void requestScreenWakeLock();
       this.persistCurrentState();
       this.notifyStatusChange();
       this.notifyTimerTick(this.getElapsedSeconds());
@@ -1245,7 +1240,6 @@ class RecordingEngineService {
           title: session.title,
           sourceType: session.source_type,
           stream,
-          wakeLockEnabled: session.wake_lock_enabled,
         });
       } catch (error) {
         stream.getTracks().forEach((track) => track.stop());

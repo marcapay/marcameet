@@ -193,7 +193,6 @@ export function MobileApp() {
         participants: participants.trim(),
         sourceType: "recording",
         stream,
-        wakeLockEnabled: true,
         chunkIntervalMs: 5000,
       });
 
