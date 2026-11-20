@@ -176,6 +176,7 @@ export interface MeetingMaterial {
 }
 
 export interface CompleteMeetingDetails {
+  transcription_warning?: string;
   support_materials?: MeetingMaterial[];
   meeting: Meeting;
   transcript?: Transcript;

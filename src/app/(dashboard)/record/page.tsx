@@ -241,7 +241,7 @@ export default function RecordPage() {
     setProcessingStatus("☁️ Sincronizando áudio e organizando os segmentos gravados...");
 
     try {
-      const result = await recordingEngine.finishMeeting();
+      const result = await recordingEngine.finishMeeting(setProcessingStatus);
       setRecordingSavedBanner(true);
 
       const newMeetingId = result.meetingId;
@@ -262,6 +262,7 @@ export default function RecordPage() {
 
       // Salvar Estrutura Inicial Imediatamente na Conta e no Supabase (com Transcrição já incluída!)
       const initialDetails: CompleteMeetingDetails = {
+        transcription_warning: result.transcriptionWarning,
         support_materials: attachment ? [attachment] : undefined,
         meeting: {
           id: newMeetingId,
@@ -332,6 +333,7 @@ export default function RecordPage() {
 
       // 5. Consolidar e Salvar no Banco/Storage
       const finalDetails: CompleteMeetingDetails = {
+        transcription_warning: initialDetails.transcription_warning,
         support_materials: initialDetails.support_materials,
         meeting: {
           ...initialDetails.meeting,
@@ -770,7 +772,7 @@ export default function RecordPage() {
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              A gravação será encerrada definitivamente e todos os blocos de áudio salvos no IndexedDB serão consolidados para gerar a transcrição e análise executiva com IA.
+              Ao encerrar, o sistema transcreve o áudio capturado e gera a análise. Com a chave da OpenAI configurada, gravações acima de 24 MB são enviadas em partes à OpenAI.
             </p>
 
             <div className="flex items-center justify-end gap-3 pt-2">

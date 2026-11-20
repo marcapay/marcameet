@@ -109,6 +109,7 @@ export function ActiveMeetingBanner() {
       }));
 
       const finalDetails: CompleteMeetingDetails = {
+        transcription_warning: result.transcriptionWarning,
         meeting: {
           id: newMeetingId,
           user_id: activeAccount?.id || "u-001",

@@ -33,6 +33,16 @@ export async function recoverTranscript(details: CompleteMeetingDetails, onProgr
   if (!original?.size) {
     throw new Error("Nenhum áudio original encontrado neste navegador. Abra a reunião no aparelho e navegador usados para gravar.");
   }
+  return transcribeRecordedAudio(original, id, details.transcript?.id, details.transcript?.speaker_map, onProgress);
+}
+
+export async function transcribeRecordedAudio(
+  original: Blob,
+  id: string,
+  existingTranscriptId?: string,
+  speakerMap: Transcript["speaker_map"] = {},
+  onProgress?: (done: number, total: number) => void,
+): Promise<{ transcript: Transcript; audioDuration: number }> {
   const { openaiKey } = getActiveApiKeys();
   if (!openaiKey) throw new Error("Configure sua chave da OpenAI em Minha Conta para transcrever o áudio.");
   const context = new AudioContext({ sampleRate: 16000 });
@@ -45,7 +55,7 @@ export async function recoverTranscript(details: CompleteMeetingDetails, onProgr
     await context.close().catch(() => {});
   }
 
-  const transcriptId = details.transcript?.id || `t-${id}`;
+  const transcriptId = existingTranscriptId || `t-${id}`;
   const segments: NonNullable<Transcript["segments"]> = [];
   const text: string[] = [];
   const partSize = audio.sampleRate * 180;
@@ -53,7 +63,7 @@ export async function recoverTranscript(details: CompleteMeetingDetails, onProgr
   for (let part = 0; part < total; part++) {
     const start = part * partSize;
     const end = Math.min(start + partSize, audio.length);
-    onProgress(part + 1, total);
+    onProgress?.(part + 1, total);
     const form = new FormData();
     form.append("file", makeWav(audio, start, end), `trecho-${part + 1}.wav`);
     form.append("model", "whisper-1");
@@ -82,7 +92,7 @@ export async function recoverTranscript(details: CompleteMeetingDetails, onProgr
   const rawText = text.join("\n\n");
   if (!rawText) throw new Error("Não foi encontrada fala reconhecível no áudio salvo.");
   return {
-    transcript: { id: transcriptId, meeting_id: id, raw_text: rawText, speaker_map: details.transcript?.speaker_map ?? {}, segments },
+    transcript: { id: transcriptId, meeting_id: id, raw_text: rawText, speaker_map: speakerMap, segments },
     audioDuration: audio.duration,
   };
 }

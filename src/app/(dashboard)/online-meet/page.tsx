@@ -424,7 +424,7 @@ export default function OnlineMeetingPage() {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
     }
 
-    const useEngineTranscript = captureResult?.canDiscardAudio || segments.length === 0;
+    const useEngineTranscript = Boolean(captureResult?.transcriptDraft.trim()) || segments.length === 0;
     const fullRawText = useEngineTranscript
       ? captureResult?.transcriptDraft || ""
       : segments.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n");
@@ -459,6 +459,7 @@ export default function OnlineMeetingPage() {
     }));
 
     const completeDetails: CompleteMeetingDetails = {
+      transcription_warning: captureResult?.transcriptionWarning,
       meeting: {
         id: meetingId,
         user_id: "u-001",

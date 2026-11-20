@@ -25,7 +25,7 @@ import {
 } from "@/lib/recording/chunkUploader";
 import {
   processAudioTranscription,
-  refineTranscriptionAccuracy,
+  getActiveApiKeys,
   hasConfiguredApiKey,
 } from "@/lib/ai";
 import {
@@ -110,6 +110,7 @@ class RecordingEngineService {
   private syncInterval: NodeJS.Timeout | null = null;
   private watchdogInterval: NodeJS.Timeout | null = null;
   private memoryMonitorInterval: NodeJS.Timeout | null = null;
+  private pendingChunkWrites = new Set<Promise<void>>();
   private microphoneRecovery: Promise<void> | null = null;
   private lastSavedMeetingId: string | null = null;
 
@@ -794,7 +795,13 @@ class RecordingEngineService {
 
     recorder.ondataavailable = async (event: BlobEvent) => {
       if (!event.data || event.data.size === 0) return;
-      await this.persistAndUploadChunk(event.data);
+      const writing = this.persistAndUploadChunk(event.data);
+      this.pendingChunkWrites.add(writing);
+      try {
+        await writing;
+      } finally {
+        this.pendingChunkWrites.delete(writing);
+      }
     };
 
     recorder.onerror = (e: any) => {
@@ -1360,11 +1367,12 @@ class RecordingEngineService {
    * FUNÇÃO CENTRALIZADA: finishMeeting()
    * Encerra gravação, drena chunks pendentes e consolida áudio completo no IndexedDB.
    */
-  public async finishMeeting(): Promise<{
+  public async finishMeeting(onProgress?: (message: string) => void): Promise<{
     meetingId: string;
     durationSeconds: number;
     transcriptDraft: string;
     canDiscardAudio: boolean;
+    transcriptionWarning?: string;
     participants?: string;
     speakerMap: Record<string, string>;
     segmentsDraft: any[];
@@ -1386,6 +1394,7 @@ class RecordingEngineService {
 
     // 1. Limpar recursos e aguardar último bloco de áudio do MediaRecorder
     await this.cleanupRecordingResources();
+    await Promise.all(this.pendingChunkWrites);
 
     // 2. Drenar e transcrever todos os chunks pendentes no IndexedDB ANTES de ler a transcrição final
     await processUploadQueue({
@@ -1401,73 +1410,53 @@ class RecordingEngineService {
     let finalSpeakerMap = this.activeSession.speaker_map || { "Participante 1": "Participante 1" };
     let finalSegments = this.activeSession.segments_draft || [];
 
-    // Keep the original chunks until the complete transcript is saved.
-    let canDiscardAudio = false;
+    let processedSeconds: number | undefined;
     try {
-      const orderedChunks = await getAllSessionChunksOrdered(finalMeetingId);
-      if (orderedChunks.length > 0) {
-        const fullMimeType = orderedChunks[0].mimeType || "audio/webm";
-        const fullAudioBlob = new Blob(
-          orderedChunks.map((c) => c.blob),
-          { type: fullMimeType }
-        );
+      const chunks = await getAllSessionChunksOrdered(finalMeetingId);
+      if (chunks.length && hasConfiguredApiKey()) {
+        const mimeType = chunks[0].mimeType || "audio/webm";
+        const audio = new Blob(chunks.map((chunk) => chunk.blob), { type: mimeType });
+        const useBatches = audio.size >= 24 * 1024 * 1024 && Boolean(getActiveApiKeys().openaiKey);
 
-        // 4. Transcrever o áudio contínuo completo + Correção Fonética Contextual por IA
-        if (hasConfiguredApiKey() && fullAudioBlob.size > 500 && fullAudioBlob.size < 24 * 1024 * 1024) {
-          try {
-            const ext = fullMimeType.includes("mp4") ? "mp4" : fullMimeType.includes("ogg") ? "ogg" : "webm";
-            const fullTranscribed = await processAudioTranscription(
-              fullAudioBlob,
-              `reuniao_completa_${finalMeetingId}.${ext}`,
-              { refineWithAI: false }
-            );
-            if (fullTranscribed && fullTranscribed.raw_text && fullTranscribed.raw_text.trim().length > 0) {
-              finalTranscript = fullTranscribed.raw_text.trim();
-              finalSpeakerMap = fullTranscribed.speaker_map || finalSpeakerMap;
-              finalSegments = (fullTranscribed.segments || []).map((s: any, idx: number) => ({
-                id: `seg-${finalMeetingId}-${idx}`,
-                transcript_id: `t-${finalMeetingId}`,
-                meeting_id: finalMeetingId,
-                start_time: Number(s.start_time || 0),
-                end_time: Number(s.end_time || 5),
-                speaker: s.speaker || "Participante 1",
-                text: s.text || "",
-              }));
-              const processedSeconds = fullTranscribed.audio_duration_seconds;
-              canDiscardAudio = finalGaps.length === 0 && finalSegments.length > 0 &&
-                typeof processedSeconds === "number" && Number.isFinite(processedSeconds) &&
-                processedSeconds > 0 && Math.abs(processedSeconds - finalDuration) <= 2;
-            }
-          } catch (fullErr) {
-            console.warn("Aviso ao transcrever áudio contínuo completo, mantendo transcrição progressiva:", fullErr);
+        if (useBatches) {
+          const { transcribeRecordedAudio } = await import("@/lib/recording/recoverTranscript");
+          const { transcript, audioDuration } = await transcribeRecordedAudio(
+            audio, finalMeetingId, undefined, finalSpeakerMap,
+            (part, total) => onProgress?.(`Transcrevendo o áudio gravado · parte ${part} de ${total}…`)
+          );
+          if (transcript.raw_text.length >= finalTranscript.trim().length) {
+            finalTranscript = transcript.raw_text;
+            finalSegments = transcript.segments || [];
+            processedSeconds = audioDuration;
           }
-        } else if (finalTranscript.trim().length > 0 && hasConfiguredApiKey()) {
-          // Refinar a transcrição progressiva caso o arquivo passe de 24MB
-          const refined = await refineTranscriptionAccuracy({
-            raw_text: finalTranscript,
-            segments: finalSegments.map((s) => ({
-              start_time: s.start_time,
-              end_time: s.end_time,
-              speaker: s.speaker,
-              text: s.text,
-            })),
-            speaker_map: finalSpeakerMap,
-          });
-          finalTranscript = refined.raw_text;
-          finalSegments = refined.segments.map((s, idx) => ({
-            id: `seg-${finalMeetingId}-${idx}`,
-            transcript_id: `t-${finalMeetingId}`,
-            meeting_id: finalMeetingId,
-            start_time: s.start_time,
-            end_time: s.end_time,
-            speaker: s.speaker,
-            text: s.text,
-          }));
+        } else if (audio.size < 24 * 1024 * 1024) {
+          onProgress?.("Transcrevendo o áudio gravado…");
+          const extension = mimeType.includes("mp4") ? "mp4" : mimeType.includes("ogg") ? "ogg" : "webm";
+          const result = await processAudioTranscription(audio, `reuniao.${extension}`, { refineWithAI: false });
+          if (result.raw_text.trim() && result.raw_text.trim().length >= finalTranscript.trim().length) {
+            finalTranscript = result.raw_text.trim();
+            finalSpeakerMap = result.speaker_map || finalSpeakerMap;
+            finalSegments = (result.segments || []).map((section, index) => ({
+              ...section,
+              id: `seg-${finalMeetingId}-${index}`,
+              transcript_id: `t-${finalMeetingId}`,
+              meeting_id: finalMeetingId,
+            }));
+            processedSeconds = result.audio_duration_seconds;
+          }
         }
       }
-    } catch (audioErr) {
-      console.warn("Aviso ao consolidar áudio completo da reunião:", audioErr);
+    } catch (error) {
+      console.warn("Não foi possível confirmar a transcrição completa; mantendo o texto já salvo.", error);
     }
+
+    const coversRecording = typeof processedSeconds === "number" && Number.isFinite(processedSeconds) &&
+      processedSeconds > 0 && Math.abs(processedSeconds - finalDuration) <= 2 &&
+      finalSegments.length > 0;
+    const canDiscardAudio = finalGaps.length === 0 && coversRecording;
+    const transcriptionWarning = finalGaps.length
+      ? "O microfone foi interrompido durante a reunião. O texto pode ter lacunas onde o áudio não foi capturado."
+      : !coversRecording ? "A transcrição pode estar parcial. Use Recuperar transcrição do áudio se ainda houver áudio salvo neste navegador." : undefined;
 
     // 5. Marcar reunião como finalizada e limpar fila temporária de chunks
     this.activeSession.status = "finished";
@@ -1481,6 +1470,7 @@ class RecordingEngineService {
       durationSeconds: finalDuration,
       transcriptDraft: finalTranscript,
       canDiscardAudio,
+      transcriptionWarning,
       participants: this.activeSession.participants,
       speakerMap: finalSpeakerMap,
       segmentsDraft: finalSegments,

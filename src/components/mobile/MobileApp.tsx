@@ -249,6 +249,7 @@ export function MobileApp() {
           : [];
 
       const initialDetails: CompleteMeetingDetails = {
+        transcription_warning: engineResult.transcriptionWarning,
         meeting: {
           id: newMeetingId,
           user_id: activeAccount?.id || "u-001",
@@ -317,6 +318,7 @@ export function MobileApp() {
       }));
 
       const finalDetails: CompleteMeetingDetails = {
+        transcription_warning: initialDetails.transcription_warning,
         meeting: {
           ...initialDetails.meeting,
           status: "CONCLUIDA",

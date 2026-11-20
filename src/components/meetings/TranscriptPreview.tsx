@@ -57,7 +57,10 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
       if (transcript.raw_text.length <= oldText.length) {
         throw new Error("O áudio encontrado não produziu mais texto que a transcrição já salva.");
       }
-      saveLocalMeeting({ ...latest, transcript });
+      const durationMatches = Math.abs(audioDuration - latest.meeting.duration_seconds) <= 2;
+      saveLocalMeeting({ ...latest, transcript, transcription_warning:
+        durationMatches && !latest.transcription_warning?.startsWith("O microfone") ? undefined : latest.transcription_warning,
+      });
       const minutes = Math.floor(audioDuration / 60);
       const seconds = Math.round(audioDuration) % 60;
       setRecoveryStatus(`Texto recuperado de ${minutes} min ${seconds} s de áudio disponível. Se a duração for menor que a reunião, parte da gravação não está neste navegador.`);
@@ -94,6 +97,7 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
           </button>
         )}
       </div>
+      {details.transcription_warning && <p role="status" className="text-sm text-amber-200">{details.transcription_warning}</p>}
       <div role="region" aria-label="Leitura da transcrição" tabIndex={0}
         className="max-h-[28rem] min-h-36 overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-slate-900 [scrollbar-gutter:stable] focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-500 sm:max-h-[32rem] sm:p-7">
         {paragraphs.length > 0 ? (
