@@ -7,6 +7,7 @@ export interface SegmentResult {
 }
 
 export interface TranscriptionResponse {
+  audio_duration_seconds?: number;
   raw_text: string;
   segments: SegmentResult[];
   speaker_map: Record<string, string>;

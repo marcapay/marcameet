@@ -179,18 +179,13 @@ export async function clearMeetingChunksInIndexedDB(meetingId: string): Promise<
  * Salva uma reunião concluída integral no IndexedDB (armazenamento ilimitado para celular)
  */
 export async function saveCompletedMeetingToIndexedDB(details: CompleteMeetingDetails): Promise<void> {
-  try {
-    const db = await openDB();
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_COMPLETED_MEETINGS, "readwrite");
-    const store = tx.objectStore(STORE_COMPLETED_MEETINGS);
-    store.put(details);
-    return new Promise((resolve, reject) => {
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn("Falha ao salvar reunião concluída no IndexedDB:", err);
-  }
+    tx.oncomplete = () => resolve();
+    tx.onabort = () => reject(tx.error || new Error("A gravação da transcrição foi interrompida."));
+    tx.objectStore(STORE_COMPLETED_MEETINGS).put(details);
+  });
 }
 
 /**

@@ -218,6 +218,7 @@ export interface InterruptionGap {
 }
 
 export interface ActiveMeetingSessionState {
+  participants?: string;
   meeting_id: string;
   session_id: string;
   user_id?: string;

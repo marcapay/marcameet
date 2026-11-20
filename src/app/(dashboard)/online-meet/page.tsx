@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
+import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
 import { saveLocalMeeting } from "@/lib/storage/mockStorage";
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { CompleteMeetingDetails } from "@/types/database";
@@ -77,7 +78,9 @@ export default function OnlineMeetingPage() {
 
   // Estados de Fluxo & Configuração
   const [step, setStep] = useState<"setup" | "recording" | "finished">("setup");
-  const [meetingTitle, setMeetingTitle] = useState("Reunião Comercial Interlagos");
+  const [meetingTitle, setMeetingTitle] = useState("");
+  const [participants, setParticipants] = useState("");
+  const [dictating, setDictating] = useState(false);
   const [platform, setPlatform] = useState<"Google Meet" | "Zoom" | "Microsoft Teams" | "Outra">("Google Meet");
   const [privacyConfirmed, setPrivacyConfirmed] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -295,6 +298,7 @@ export default function OnlineMeetingPage() {
       await recordingEngine.startRecording({
         meetingId,
         title: meetingTitle.trim(),
+        participants: participants.trim(),
         sourceType: "online_meeting",
         stream: audioOnlyStream,
         chunkIntervalMs: 5000,
@@ -398,13 +402,13 @@ export default function OnlineMeetingPage() {
 
     let finalDuration = seconds;
     let meetingId = meetingIdRef.current;
-    let engineTranscriptDraft = "";
+    let captureResult: Awaited<ReturnType<typeof recordingEngine.finishMeeting>> | undefined;
 
     try {
       const engineResult = await recordingEngine.finishMeeting();
       finalDuration = engineResult.durationSeconds;
       meetingId = engineResult.meetingId;
-      engineTranscriptDraft = engineResult.transcriptDraft || "";
+      captureResult = engineResult;
     } catch (err) {
       console.warn("Aviso ao encerrar engine:", err);
     }
@@ -419,9 +423,10 @@ export default function OnlineMeetingPage() {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
     }
 
-    const fullRawText = segments.length > 0
-      ? segments.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n")
-      : engineTranscriptDraft || "Reunião finalizada sem trecho de fala gravado.";
+    const useEngineTranscript = captureResult?.canDiscardAudio || segments.length === 0;
+    const fullRawText = useEngineTranscript
+      ? captureResult?.transcriptDraft || ""
+      : segments.map((s) => `[${s.timestamp}] ${speakerMap[s.speaker] || s.speaker}: ${s.text}`).join("\n");
 
 
     let aiData: any = null;
@@ -457,7 +462,7 @@ export default function OnlineMeetingPage() {
         id: meetingId,
         user_id: "u-001",
         title: meetingTitle.trim(),
-        description: `Transcrição de reunião online (${platform}) capturada via navegador e detalhada via IA.`,
+        description: participants.trim() ? `Participantes informados: ${participants.trim()}.` : `Reunião online (${platform}).`,
         meeting_date: new Date().toISOString(),
         duration_seconds: finalDuration,
         source_type: "online_meeting",
@@ -474,8 +479,8 @@ export default function OnlineMeetingPage() {
         id: `t-${meetingId}`,
         meeting_id: meetingId,
         raw_text: fullRawText,
-        speaker_map: speakerMap,
-        segments: segments.map((s) => ({
+        speaker_map: useEngineTranscript ? captureResult?.speakerMap || {} : speakerMap,
+        segments: useEngineTranscript ? captureResult?.segmentsDraft || [] : segments.map((s) => ({
           id: s.id,
           transcript_id: `t-${meetingId}`,
           meeting_id: meetingId,
@@ -564,7 +569,7 @@ export default function OnlineMeetingPage() {
       })),
     };
 
-    saveLocalMeeting(completeDetails);
+    saveLocalMeeting(completeDetails, Boolean(captureResult?.canDiscardAudio));
     setSavedDetails(completeDetails);
 
     setIsAnalyzingAI(false);
@@ -630,19 +635,7 @@ export default function OnlineMeetingPage() {
           )}
 
           <div className="space-y-4">
-            {/* Nome da Reunião */}
-            <div className="space-y-1.5">
-              <label className="block text-xs font-bold uppercase tracking-wider text-slate-300">
-                Nome da Reunião <span className="text-rose-400">*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="Ex: Reunião Comercial Interlagos"
-                value={meetingTitle}
-                onChange={(e) => setMeetingTitle(e.target.value)}
-                className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-slate-800 text-white text-sm focus:outline-none focus:border-indigo-500 transition-colors"
-              />
-            </div>
+            <MeetingTitleFields title={meetingTitle} participants={participants} onTitle={setMeetingTitle} onParticipants={setParticipants} onListening={setDictating} />
 
             {/* Seleção de Plataforma */}
             <div className="space-y-1.5">
@@ -696,7 +689,7 @@ export default function OnlineMeetingPage() {
           <div className="pt-2">
             <button
               onClick={startCapture}
-              disabled={!privacyConfirmed || !meetingTitle.trim()}
+              disabled={dictating || !privacyConfirmed || !meetingTitle.trim()}
               className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-sm uppercase tracking-wider shadow-xl shadow-emerald-600/20 transition-all active:scale-95 flex items-center justify-center gap-2"
             >
               <Radio className="w-5 h-5 text-emerald-300 animate-pulse" />

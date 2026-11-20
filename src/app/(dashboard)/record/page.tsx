@@ -31,6 +31,7 @@ import {
   InterruptionGap,
   VisualRecordingState,
 } from "@/types/database";
+import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
 import { recordingEngine, getSupportedMimeType } from "@/lib/audio/recordingEngine";
 import {
   getUploaderState,
@@ -62,6 +63,8 @@ export default function RecordPage() {
 
   // Campos Opcionais Antes da Gravação
   const [title, setTitle] = useState("");
+  const [participants, setParticipants] = useState("");
+  const [dictating, setDictating] = useState(false);
   const [description, setDescription] = useState("");
   const [tagsInput, setTagsInput] = useState("Presencial, Alinhamento");
 
@@ -125,6 +128,7 @@ export default function RecordPage() {
         setInterruptionGaps(session.interruption_gaps || []);
         setSavedChunksCount(recordingEngine.getSavedChunksCount());
         if (session.title) setTitle(session.title);
+        setParticipants(session.participants || "");
       } else {
         setIsRecording(false);
         setIsPaused(false);
@@ -194,6 +198,7 @@ export default function RecordPage() {
       await recordingEngine.startRecording({
         meetingId,
         title: meetingTitle,
+        participants: participants.trim(),
         sourceType: "recording",
         stream,
         wakeLockEnabled,
@@ -384,7 +389,7 @@ export default function RecordPage() {
 
       const newMeetingId = result.meetingId;
       const duration = result.durationSeconds;
-      const rawTextDraft = result.transcriptDraft || "Reunião presencial gravada com sucesso.";
+      const rawTextDraft = result.transcriptDraft;
       const meetingTitle =
         title.trim() ||
         `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", {
@@ -400,7 +405,7 @@ export default function RecordPage() {
       const segmentsDraft =
         result.segmentsDraft && result.segmentsDraft.length > 0
           ? result.segmentsDraft
-          : [{ start_time: 0, end_time: duration || 5, speaker: "Participante 1", text: rawTextDraft }];
+          : [];
 
       // Salvar Estrutura Inicial Imediatamente na Conta e no Supabase (com Transcrição já incluída!)
       const initialDetails: CompleteMeetingDetails = {
@@ -409,7 +414,7 @@ export default function RecordPage() {
           user_id: activeAccount?.id || "u-001",
           user_email: activeAccount?.email,
           title: meetingTitle,
-          description: description || "Gravação presencial iniciada pelo celular/computador.",
+          description: [result.participants ? `Participantes informados: ${result.participants}.` : "", description].filter(Boolean).join(" ") || "Gravação presencial.",
           meeting_date: new Date().toISOString(),
           duration_seconds: duration,
           source_type: "recording",
@@ -447,7 +452,7 @@ export default function RecordPage() {
         next_steps_ai_suggestions: [],
       };
 
-      saveLocalMeeting(initialDetails);
+      saveLocalMeeting(initialDetails, result.canDiscardAudio);
 
       // 2. Iniciar Análise por IA
       setProcessingStatus("Gerando resumo executivo detalhado, decisões e tarefas com IA...");
@@ -484,7 +489,7 @@ export default function RecordPage() {
           id: `t-${newMeetingId}`,
           meeting_id: newMeetingId,
           raw_text: rawTextDraft,
-          speaker_map: { "Participante 1": "Participante 1" },
+          speaker_map: result.speakerMap,
           segments: segmentsDraft.map((s, i) => ({
             id: `seg-${newMeetingId}-${i}`,
             transcript_id: `t-${newMeetingId}`,
@@ -567,7 +572,7 @@ export default function RecordPage() {
       };
 
       saveLocalMeeting(finalDetails);
-      router.push(`/tasks?meetingId=${newMeetingId}`);
+      router.push(`/meetings/${newMeetingId}`);
     } catch (e: any) {
       console.error("Erro ao finalizar reunião:", e);
       alert("Ocorreu um erro ao encerrar a reunião: " + e.message);
@@ -724,6 +729,7 @@ export default function RecordPage() {
             <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-rose-600 to-indigo-600 p-1 mx-auto shadow-xl shadow-rose-600/30">
               <button
                 onClick={startRecording}
+                disabled={dictating}
                 className="w-full h-full rounded-full bg-slate-950 hover:bg-rose-600/20 flex items-center justify-center border border-rose-500/50 transition-all transform hover:scale-105 active:scale-95 group focus:outline-none"
               >
                 <Mic className="w-10 h-10 text-rose-500 group-hover:text-white transition-colors" />
@@ -733,6 +739,7 @@ export default function RecordPage() {
             <div className="space-y-2 max-w-md mx-auto">
               <button
                 onClick={startRecording}
+                disabled={dictating}
                 className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-extrabold text-lg shadow-lg shadow-rose-600/25 transition-all transform hover:-translate-y-0.5 active:scale-95"
               >
                 INICIAR GRAVAÇÃO
@@ -766,16 +773,7 @@ export default function RecordPage() {
 
             {/* Campos Opcionais Antes da Gravação */}
             <div className="space-y-3 pt-2">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Título da Reunião</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Reunião Alinhamento Estratégico Q3"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500 transition-colors"
-                />
-              </div>
+              <MeetingTitleFields title={title} participants={participants} onTitle={setTitle} onParticipants={setParticipants} onListening={setDictating} />
 
               <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Descrição</label>

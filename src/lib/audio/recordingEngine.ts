@@ -15,7 +15,6 @@ import {
   clearSessionChunks,
   countChunks,
   getAllSessionChunksOrdered,
-  saveMeetingAudioBlob,
   getSessionChunkStats,
 } from "@/lib/recording/chunkStore";
 import {
@@ -606,6 +605,7 @@ class RecordingEngineService {
     stream: MediaStream;
     wakeLockEnabled?: boolean;
     chunkIntervalMs?: number;
+    participants?: string;
   }): Promise<ActiveMeetingSessionState> {
     const { meetingId, title, sourceType, stream, wakeLockEnabled = true } = params;
 
@@ -653,6 +653,7 @@ class RecordingEngineService {
       session_id: sessionId,
       user_id: currentAccount?.id || this.activeSession?.user_id || "u-001",
       title: title || this.activeSession?.title || "Reunião Sem Título",
+      participants: params.participants || (isResumingInterrupted ? this.activeSession?.participants : undefined),
       source_type: sourceType,
       status: document.visibilityState === "hidden" ? "background" : "recording",
       started_at: isResumingInterrupted ? this.activeSession!.started_at : nowIso,
@@ -1325,6 +1326,8 @@ class RecordingEngineService {
     meetingId: string;
     durationSeconds: number;
     transcriptDraft: string;
+    canDiscardAudio: boolean;
+    participants?: string;
     speakerMap: Record<string, string>;
     segmentsDraft: any[];
     interruptionGaps: InterruptionGap[];
@@ -1360,7 +1363,8 @@ class RecordingEngineService {
     let finalSpeakerMap = this.activeSession.speaker_map || { "Participante 1": "Participante 1" };
     let finalSegments = this.activeSession.segments_draft || [];
 
-    // 3. Consolidar TODOS os chunks em um único arquivo de áudio contínuo e salvar no IndexedDB para reprodução no MediaPlayer
+    // Keep the original chunks until the complete transcript is saved.
+    let canDiscardAudio = false;
     try {
       const orderedChunks = await getAllSessionChunksOrdered(finalMeetingId);
       if (orderedChunks.length > 0) {
@@ -1370,9 +1374,6 @@ class RecordingEngineService {
           { type: fullMimeType }
         );
 
-        // Salvar áudio completo da reunião para tocar no MediaPlayer
-        await saveMeetingAudioBlob(finalMeetingId, fullAudioBlob, fullMimeType);
-
         // 4. Transcrever o áudio contínuo completo + Correção Fonética Contextual por IA
         if (hasConfiguredApiKey() && fullAudioBlob.size > 500 && fullAudioBlob.size < 24 * 1024 * 1024) {
           try {
@@ -1380,7 +1381,7 @@ class RecordingEngineService {
             const fullTranscribed = await processAudioTranscription(
               fullAudioBlob,
               `reuniao_completa_${finalMeetingId}.${ext}`,
-              { refineWithAI: true }
+              { refineWithAI: false }
             );
             if (fullTranscribed && fullTranscribed.raw_text && fullTranscribed.raw_text.trim().length > 0) {
               finalTranscript = fullTranscribed.raw_text.trim();
@@ -1394,6 +1395,10 @@ class RecordingEngineService {
                 speaker: s.speaker || "Participante 1",
                 text: s.text || "",
               }));
+              const processedSeconds = fullTranscribed.audio_duration_seconds;
+              canDiscardAudio = finalGaps.length === 0 && finalSegments.length > 0 &&
+                typeof processedSeconds === "number" && Number.isFinite(processedSeconds) &&
+                processedSeconds > 0 && Math.abs(processedSeconds - finalDuration) <= 2;
             }
           } catch (fullErr) {
             console.warn("Aviso ao transcrever áudio contínuo completo, mantendo transcrição progressiva:", fullErr);
@@ -1433,12 +1438,12 @@ class RecordingEngineService {
 
     await closeActiveMeetingInSupabase(finalMeetingId);
     await clearActiveSessionInIndexedDB(finalMeetingId);
-    await clearSessionChunks(finalMeetingId);
-
     const result = {
       meetingId: finalMeetingId,
       durationSeconds: finalDuration,
       transcriptDraft: finalTranscript,
+      canDiscardAudio,
+      participants: this.activeSession.participants,
       speakerMap: finalSpeakerMap,
       segmentsDraft: finalSegments,
       interruptionGaps: finalGaps,

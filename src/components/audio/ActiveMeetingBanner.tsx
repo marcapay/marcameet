@@ -78,14 +78,14 @@ export function ActiveMeetingBanner() {
 
       const newMeetingId = result.meetingId;
       const duration = result.durationSeconds;
-      const rawTextDraft = result.transcriptDraft || "Reunião recuperada e salva com sucesso.";
+      const rawTextDraft = result.transcriptDraft;
       const meetingTitle = sessionSnapshot.title || "Reunião Recuperada";
       const activeAccount = getCurrentAccount();
 
       const segmentsDraft =
         result.segmentsDraft && result.segmentsDraft.length > 0
           ? result.segmentsDraft
-          : [{ start_time: 0, end_time: duration || 5, speaker: "Participante 1", text: rawTextDraft }];
+          : [];
 
       let aiData: any = null;
       try {
@@ -114,7 +114,7 @@ export function ActiveMeetingBanner() {
           user_id: activeAccount?.id || "u-001",
           user_email: activeAccount?.email,
           title: meetingTitle,
-          description: "Gravação salva e recuperada com proteção periódica de áudio.",
+          description: result.participants ? `Participantes informados: ${result.participants}.` : "Gravação recuperada.",
           meeting_date: sessionSnapshot.started_at || new Date().toISOString(),
           duration_seconds: duration,
           source_type: sessionSnapshot.source_type || "recording",
@@ -215,10 +215,10 @@ export function ActiveMeetingBanner() {
         next_steps_ai_suggestions: aiData?.next_steps_ai_suggestions || [],
       };
 
-      saveLocalMeeting(finalDetails);
+      saveLocalMeeting(finalDetails, result.canDiscardAudio);
       setShowConfirmModal(false);
       setActiveSession(null);
-      router.push(`/tasks?meetingId=${newMeetingId}`);
+      router.push(`/meetings/${newMeetingId}`);
     } catch (err) {
       console.error("Erro ao encerrar reunião:", err);
     } finally {

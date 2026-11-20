@@ -14,7 +14,7 @@ import {
   requestPersistentBrowserStorage,
 } from "@/lib/storage/indexedDbQueue";
 import { getCurrentAccount, subscribeAccountChange } from "@/lib/auth/accountSystem";
-import { deleteMeetingAudioBlob } from "@/lib/recording/chunkStore";
+import { clearSessionChunks, deleteMeetingAudioBlob } from "@/lib/recording/chunkStore";
 import { getStoredKey, setStoredKey } from "@/lib/storage/keysStorage";
 
 const STORAGE_KEY_MEETINGS = "marcameet_meetings_v2";
@@ -374,7 +374,7 @@ export function getLocalMeetings(): CompleteMeetingDetails[] {
   return filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
 }
 
-export function saveLocalMeeting(details: CompleteMeetingDetails): void {
+export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecordedAudio = false): void {
   if (typeof window === "undefined" || !details?.meeting?.id) return;
 
   const account = getCurrentAccount();
@@ -401,9 +401,13 @@ export function saveLocalMeeting(details: CompleteMeetingDetails): void {
   persistMeetingsToLocalStorage(account);
 
   // 3. Salvar no IndexedDB
-  saveCompletedMeetingToIndexedDB(enrichedDetails).catch((err) =>
-    console.warn("Falha ao salvar reunião no IndexedDB local:", err)
-  );
+  void saveCompletedMeetingToIndexedDB(enrichedDetails)
+    .then(async () => {
+      if (discardRecordedAudio && enrichedDetails.transcript?.raw_text.trim()) {
+        await clearSessionChunks(enrichedDetails.meeting.id);
+      }
+    })
+    .catch((err) => console.warn("Falha ao salvar a reunião ou limpar o áudio temporário:", err));
 
   // 4. Sincronizar criação/atualização no Supabase e no /api/cloud-sync
   saveMeetingToSupabase(enrichedDetails).catch((err) =>
@@ -442,6 +446,8 @@ export async function deleteLocalMeeting(meetingId: string): Promise<void> {
   await deleteCompletedMeetingFromIndexedDB(targetUuid);
   await deleteMeetingAudioBlob(meetingId);
   await deleteMeetingAudioBlob(targetUuid);
+  await clearSessionChunks(meetingId);
+  if (targetUuid !== meetingId) await clearSessionChunks(targetUuid);
 
   // 3. Excluir do /api/cloud-sync e do Supabase
   fetch("/api/cloud-sync", {

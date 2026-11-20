@@ -86,7 +86,7 @@ REGRAS ESTRITAS:
               segments: parsed.segments.map((s: any, idx: number) => ({
                 start_time: s.start_time ?? raw.segments[idx]?.start_time ?? 0,
                 end_time: s.end_time ?? raw.segments[idx]?.end_time ?? 5,
-                speaker: s.speaker || raw.segments[idx]?.speaker || "Participante 1",
+                speaker: raw.segments[idx]?.speaker || "Falante não identificado",
                 text: (s.text || raw.segments[idx]?.text || "").trim(),
               })),
               speaker_map: raw.speaker_map,
@@ -127,7 +127,7 @@ REGRAS ESTRITAS:
               segments: parsed.segments.map((s: any, idx: number) => ({
                 start_time: s.start_time ?? raw.segments[idx]?.start_time ?? 0,
                 end_time: s.end_time ?? raw.segments[idx]?.end_time ?? 5,
-                speaker: s.speaker || raw.segments[idx]?.speaker || "Participante 1",
+                speaker: raw.segments[idx]?.speaker || "Falante não identificado",
                 text: (s.text || raw.segments[idx]?.text || "").trim(),
               })),
               speaker_map: raw.speaker_map,
@@ -158,7 +158,7 @@ REGRAS ESTRITAS:
               segments: parsed.segments.map((s: any, idx: number) => ({
                 start_time: s.start_time ?? raw.segments[idx]?.start_time ?? 0,
                 end_time: s.end_time ?? raw.segments[idx]?.end_time ?? 5,
-                speaker: s.speaker || raw.segments[idx]?.speaker || "Participante 1",
+                speaker: raw.segments[idx]?.speaker || "Falante não identificado",
                 text: (s.text || raw.segments[idx]?.text || "").trim(),
               })),
               speaker_map: raw.speaker_map,
@@ -216,15 +216,16 @@ export async function processAudioTranscription(
           .map((s: any, idx: number) => ({
             start_time: Math.round((s.start || 0) * 10) / 10,
             end_time: Math.round((s.end || 0) * 10) / 10,
-            speaker: `Participante ${(idx % 2) + 1}`,
+            speaker: "Falante não identificado",
             text: s.text.trim(),
           }));
 
         if (rawText.length > 0) {
           const initialResult: TranscriptionResponse = {
+            audio_duration_seconds: segments.length > 0 && typeof data.duration === "number" ? data.duration : undefined,
             raw_text: rawText,
             segments: segments.length > 0 ? segments : [
-              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+              { start_time: 0, end_time: 5, speaker: "Falante não identificado", text: rawText }
             ],
             speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
           };
@@ -263,15 +264,16 @@ export async function processAudioTranscription(
           .map((s: any, idx: number) => ({
             start_time: Math.round((s.start || 0) * 10) / 10,
             end_time: Math.round((s.end || 0) * 10) / 10,
-            speaker: `Participante ${(idx % 2) + 1}`,
+            speaker: "Falante não identificado",
             text: s.text.trim(),
           }));
 
         if (rawText.length > 0) {
           const initialResult: TranscriptionResponse = {
+            audio_duration_seconds: segments.length > 0 && typeof data.duration === "number" ? data.duration : undefined,
             raw_text: rawText,
             segments: segments.length > 0 ? segments : [
-              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+              { start_time: 0, end_time: 5, speaker: "Falante não identificado", text: rawText }
             ],
             speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
           };
@@ -354,7 +356,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
               .map((s: any, idx: number) => ({
                 start_time: Math.round((s.start_time || 0) * 10) / 10,
                 end_time: Math.round((s.end_time || 5) * 10) / 10,
-                speaker: s.speaker || `Participante ${(idx % 2) + 1}`,
+                speaker: s.speaker || "Falante não identificado",
                 text: s.text.trim(),
               }));
 
@@ -398,7 +400,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
           .map((s: any, idx: number) => ({
             start_time: Math.round((s.start || 0) * 10) / 10,
             end_time: Math.round((s.end || 0) * 10) / 10,
-            speaker: `Participante ${(idx % 2) + 1}`,
+            speaker: "Falante não identificado",
             text: s.text.trim(),
           }));
 
@@ -406,7 +408,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
           return {
             raw_text: rawText,
             segments: segments.length > 0 ? segments : [
-              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+              { start_time: 0, end_time: 5, speaker: "Falante não identificado", text: rawText }
             ],
             speaker_map: { "Participante 1": "Participante 1", "Participante 2": "Participante 2" },
           };
@@ -440,7 +442,7 @@ Retorne APENAS um JSON válido exatamente neste formato:
           return {
             raw_text: rawText,
             segments: [
-              { start_time: 0, end_time: 5, speaker: "Participante 1", text: rawText }
+              { start_time: 0, end_time: 5, speaker: "Falante não identificado", text: rawText }
             ],
             speaker_map: { "Participante 1": "Participante 1" },
           };
@@ -616,10 +618,12 @@ REGRAS DE RESPOSTA OBRIGATÓRIAS:
 1. Responda em português de forma clara, amigável e direta.
 2. SEMPRE QUE REFERENCIAR UM MOMENTO OU ASSUNTO DISCUTIDO, INDIQUE O MINUTO EXATO NO FORMATO [MM:SS] (exemplo: [02:15] ou [14:30]).
 3. Se o usuário perguntar "em qual parte foi falado X", identifique o trecho na transcrição e diga o minuto [MM:SS], quem falou (participante) e a explicação.
-4. Se o assunto não tiver sido tratado na reunião, diga educadamente que ele não foi mencionado na gravação.
+4. Se a transcrição não sustentar a resposta, diga que não encontrou a informação nos trechos disponíveis.
+5. Nunca invente nomes nem atribua falas a uma pessoa com base em rótulos genéricos. Informe quando a identidade não puder ser confirmada.
 
 DADOS DA REUNIÃO:
 Título: ${details.meeting.title}
+Descrição e participantes informados, quando disponíveis: ${details.meeting.description || "Não informados"}. Uma lista de presença não identifica a voz.
 Data: ${new Date(details.meeting.meeting_date).toLocaleDateString("pt-BR")}
 Resumo / Objetivo: ${details.summary?.objective || "Não especificado"}
 Conclusão: ${details.summary?.conclusions || "Não especificado"}
@@ -714,7 +718,10 @@ ${formattedSegments || details.transcript?.raw_text || "Nenhuma transcrição gr
       .padStart(2, "0");
     const speaker = details.transcript?.speaker_map?.[firstMatch.speaker] || firstMatch.speaker;
 
-    return `Este assunto foi mencionado por ${speaker} aos [${m}:${sec}]:\n"${firstMatch.text}"\n\n(Dica: Clique na minutagem [${m}:${sec}] para ouvir diretamente este ponto do áudio!).`;
+    const attribution = !speaker || /^(participante\s*\d+|falante não identificado)$/i.test(speaker)
+      ? "Não consegui confirmar quem falou."
+      : `A transcrição atribui a fala a ${speaker}.`;
+    return `Encontrei este trecho aos [${m}:${sec}]:\n"${firstMatch.text}"\n\n${attribution}`;
   }
 
   return `Não encontrei menção direta a esse assunto na reunião "${details.meeting.title}". Você pode verificar a transcrição completa na aba "Transcrição Completa".`;

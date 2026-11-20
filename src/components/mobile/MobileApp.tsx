@@ -35,9 +35,10 @@ import { getLocalMeetings, saveLocalMeeting, updateSpeakerNameInMeeting, updateM
 import { processAudioTranscription, processAIAnalysis, hasConfiguredApiKey } from "@/lib/ai";
 import { requestScreenWakeLock, releaseScreenWakeLock, startAudioKeepAlive, stopAudioKeepAlive } from "@/lib/audio/recordingKeepAlive";
 import { CompleteMeetingDetails } from "@/types/database";
-import { MediaPlayer } from "@/components/audio/MediaPlayer";
+import { MeetingChat } from "@/components/meetings/MeetingChat";
 import { RecordingTimerDisplay } from "@/components/audio/RecordingTimerDisplay";
 import { WakeLockStatusBadge } from "@/components/audio/WakeLockStatusBadge";
+import { MeetingTitleFields } from "@/components/meetings/MeetingTitleFields";
 import { recordingEngine } from "@/lib/audio/recordingEngine";
 import { generateUuid, getCurrentAccount } from "@/lib/auth/accountSystem";
 
@@ -47,6 +48,8 @@ export function MobileApp() {
 
   // Gravação
   const [title, setTitle] = useState("");
+  const [participants, setParticipants] = useState("");
+  const [dictating, setDictating] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [savedChunksCount, setSavedChunksCount] = useState(0);
@@ -58,7 +61,6 @@ export function MobileApp() {
   const [selectedMeeting, setSelectedMeeting] = useState<CompleteMeetingDetails | null>(null);
 
   // Transcrição & Player
-  const [seekTime, setSeekTime] = useState<number | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [newSpeakerName, setNewSpeakerName] = useState("");
@@ -187,6 +189,7 @@ export function MobileApp() {
       await recordingEngine.startRecording({
         meetingId,
         title: meetingTitle,
+        participants: participants.trim(),
         sourceType: "recording",
         stream,
         wakeLockEnabled: true,
@@ -235,7 +238,7 @@ export function MobileApp() {
       const engineResult = await recordingEngine.finishMeeting();
 
       const duration = engineResult.durationSeconds;
-      const rawTextDraft = engineResult.transcriptDraft || "Reunião gravada e processada.";
+      const rawTextDraft = engineResult.transcriptDraft;
       const newMeetingId = engineResult.meetingId;
       const meetingTitle = title.trim() || `Reunião Presencial - ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
       const activeAccount = getCurrentAccount();
@@ -243,7 +246,7 @@ export function MobileApp() {
       const segmentsDraft =
         engineResult.segmentsDraft && engineResult.segmentsDraft.length > 0
           ? engineResult.segmentsDraft
-          : [{ start_time: 0, end_time: duration || 5, speaker: "Participante 1", text: rawTextDraft }];
+          : [];
 
       const initialDetails: CompleteMeetingDetails = {
         meeting: {
@@ -251,7 +254,7 @@ export function MobileApp() {
           user_id: activeAccount?.id || "u-001",
           user_email: activeAccount?.email,
           title: meetingTitle,
-          description: "Gravação presencial rápida iniciada pelo dashboard principal.",
+          description: engineResult.participants ? `Participantes informados: ${engineResult.participants}.` : "Gravação presencial.",
           meeting_date: new Date().toISOString(),
           duration_seconds: duration,
           source_type: "recording",
@@ -289,7 +292,7 @@ export function MobileApp() {
         next_steps_ai_suggestions: [],
       };
 
-      saveLocalMeeting(initialDetails);
+      saveLocalMeeting(initialDetails, engineResult.canDiscardAudio);
 
       setProcessingStatus("Gerando resumo executivo, decisões e tarefas com IA...");
       const aiData = await processAIAnalysis(rawTextDraft, segmentsDraft);
@@ -325,7 +328,7 @@ export function MobileApp() {
           id: `t-${newMeetingId}`,
           meeting_id: newMeetingId,
           raw_text: rawTextDraft,
-          speaker_map: { "Participante 1": "Participante 1" },
+          speaker_map: engineResult.speakerMap,
           segments: segmentsDraft.map((s, i) => ({
             id: `seg-${newMeetingId}-${i}`,
             transcript_id: `t-${newMeetingId}`,
@@ -416,6 +419,7 @@ export function MobileApp() {
       setIsPaused(false);
       setSeconds(0);
       setTitle("");
+      setParticipants("");
       setProcessingStatus(null);
 
       // Trocar para a aba de Resumo e exibir aviso
@@ -427,6 +431,7 @@ export function MobileApp() {
       setIsPaused(false);
       setSeconds(0);
       setTitle("");
+      setParticipants("");
       setProcessingStatus(null);
 
       // Carregar e atualizar lista de reuniões salvas no celular
@@ -601,19 +606,8 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 )}
               </div>
 
-              {/* Título opcional */}
-              <div className="space-y-1.5 max-w-xl">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Título / Assunto da Reunião (Opcional)
-                </label>
-                <input
-                  type="text"
-                  disabled={isRecording}
-                  placeholder="Ex: Alinhamento de Vendas & Planejamento Q3"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-4 py-3 rounded-2xl bg-slate-900 border border-slate-800 text-slate-100 text-sm focus:outline-none focus:border-indigo-500 transition-colors disabled:opacity-50"
-                />
+              <div className="max-w-xl">
+                <MeetingTitleFields title={title} participants={participants} onTitle={setTitle} onParticipants={setParticipants} onListening={setDictating} disabled={isRecording} />
               </div>
 
               {/* Botão Principal & Display de Cronômetro */}
@@ -624,6 +618,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                   )}
                   <button
                     onClick={isRecording ? (isPaused ? resumeRecording : pauseRecording) : startRecording}
+                    disabled={dictating}
                     className={`relative w-32 h-32 rounded-full flex items-center justify-center shadow-2xl transition-all transform hover:scale-105 active:scale-95 focus:outline-none ${
                       isRecording
                         ? isPaused
@@ -669,6 +664,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 {!isRecording ? (
                   <button
                     onClick={startRecording}
+                    disabled={dictating}
                     className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-black text-sm uppercase tracking-wider shadow-lg shadow-rose-600/30 transition-all active:scale-95 flex items-center justify-center gap-2"
                   >
                     <Mic className="w-5 h-5" />
@@ -869,13 +865,7 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 </div>
               </div>
 
-              {/* Player Integrado */}
-              <MediaPlayer
-                meetingId={selectedMeeting.meeting.id}
-                fallbackDuration={selectedMeeting.meeting.duration_seconds}
-                transcriptText={selectedMeeting.transcript?.raw_text}
-                seekToTime={seekTime}
-              />
+              <MeetingChat details={selectedMeeting} />
 
               {/* Card 1: Resumo Executivo */}
               <div className="p-4 sm:p-6 rounded-3xl glass-card border border-indigo-500/20 space-y-3 w-full max-w-full overflow-hidden">
@@ -926,16 +916,10 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                         <div key={d.id} className="p-3.5 rounded-2xl bg-slate-900/80 border border-emerald-500/20 space-y-1">
                           <p className="text-xs font-semibold text-slate-100 break-words">• {d.decision_text}</p>
                           {d.timestamp_start !== undefined && (
-                            <button
-                              onClick={() => {
-                                setSeekTime(d.timestamp_start ?? null);
-                                showToast(`Reproduzindo a partir de ${formatTimestamp(d.timestamp_start)}`);
-                              }}
-                              className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1"
-                            >
+                            <span className="text-[10px] font-mono text-indigo-400 flex items-center gap-1">
                               <Clock className="w-3 h-3" />
                               <span>Fonte: {formatTimestamp(d.timestamp_start)}</span>
-                            </button>
+                            </span>
                           )}
                         </div>
                       ))}
@@ -963,13 +947,10 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                         <div key={h.id} className="p-3.5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-1">
                           <p className="text-xs text-slate-200 break-words">{h.description}</p>
                           {h.timestamp_start !== undefined && (
-                            <button
-                              onClick={() => setSeekTime(h.timestamp_start ?? null)}
-                              className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1"
-                            >
+                            <span className="text-[10px] font-mono text-indigo-400 flex items-center gap-1">
                               <Clock className="w-3 h-3" />
                               <span>Trecho: {formatTimestamp(h.timestamp_start)}</span>
-                            </button>
+                            </span>
                           )}
                         </div>
                       ))}
@@ -1177,13 +1158,9 @@ ${tasks.length > 0 ? tasks.map((t) => `• ${t.title} (Resp: ${t.assignee})`).jo
                 <div key={seg.id} className="pt-4 first:pt-0 space-y-1.5 group">
                   <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={() => setSeekTime(seg.start_time)}
-                        className="px-2.5 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600 text-indigo-300 hover:text-white font-mono text-xs font-bold transition-all border border-indigo-500/30 shrink-0"
-                        title="Reproduzir áudio deste trecho"
-                      >
+                      <span className="px-2.5 py-0.5 rounded bg-indigo-600/20 text-indigo-300 font-mono text-xs font-bold transition-all border border-indigo-500/30 shrink-0">
                         {formatTimestamp(seg.start_time)}
-                      </button>
+                      </span>
                       <span className="font-bold text-slate-200 text-xs">
                         {selectedMeeting.transcript?.speaker_map[seg.speaker] || seg.speaker}
                       </span>
