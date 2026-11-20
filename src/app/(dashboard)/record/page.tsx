@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Mic,
+  Paperclip,
   Square,
   Pause,
   Play,
@@ -45,6 +46,9 @@ export default function RecordPage() {
   const [participants, setParticipants] = useState("");
   const [dictating, setDictating] = useState(false);
   const [dictatingDescription, setDictatingDescription] = useState(false);
+  const [attachment, setAttachment] = useState<{ name: string; text: string } | null>(null);
+  const [readingAttachment, setReadingAttachment] = useState(false);
+  const [attachmentError, setAttachmentError] = useState("");
   const [description, setDescription] = useState("");
 
   // Opções de gravação
@@ -148,6 +152,19 @@ export default function RecordPage() {
     };
   }, []);
 
+  async function attachFile(file: File) {
+    setReadingAttachment(true);
+    setAttachmentError("");
+    try {
+      const { readMeetingAttachment } = await import("@/lib/ai/meetingAttachment");
+      setAttachment({ name: file.name, text: await readMeetingAttachment(file) });
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : "Não foi possível ler o anexo.");
+    } finally {
+      setReadingAttachment(false);
+    }
+  }
+
   // Iniciar Gravação
   const startRecording = async () => {
     try {
@@ -245,12 +262,13 @@ export default function RecordPage() {
 
       // Salvar Estrutura Inicial Imediatamente na Conta e no Supabase (com Transcrição já incluída!)
       const initialDetails: CompleteMeetingDetails = {
+        support_materials: attachment ? [attachment] : undefined,
         meeting: {
           id: newMeetingId,
           user_id: activeAccount?.id || "u-001",
           user_email: activeAccount?.email,
           title: meetingTitle,
-          description: [result.participants ? `Participantes informados: ${result.participants}.` : "", description].filter(Boolean).join(" ") || "Gravação presencial.",
+          description: [result.participants ? `Participantes informados: ${result.participants}.` : "", description.trim()].filter(Boolean).join(" ") || "Gravação presencial.",
           meeting_date: new Date().toISOString(),
           duration_seconds: duration,
           source_type: "recording",
@@ -314,6 +332,7 @@ export default function RecordPage() {
 
       // 5. Consolidar e Salvar no Banco/Storage
       const finalDetails: CompleteMeetingDetails = {
+        support_materials: initialDetails.support_materials,
         meeting: {
           ...initialDetails.meeting,
           status: "CONCLUIDA",
@@ -587,16 +606,37 @@ export default function RecordPage() {
                       placeholder="Breve descrição dos objetivos..."
                       value={description}
                       onChange={(e) => setDescription(e.target.value)}
-                      className="block w-full rounded-xl border border-slate-800 bg-slate-900 py-2.5 pl-4 pr-16 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
+                      className="block w-full rounded-xl border border-slate-800 bg-slate-900 py-2.5 pl-4 pr-28 text-slate-100 text-sm focus:outline-none focus:border-indigo-500"
                     />
                     <QuestionDictation
                       label="Ditar descrição"
-                      buttonClassName="absolute right-2 top-2"
+                      buttonClassName="absolute right-14 top-2"
                       disabled={dictating}
                       onListening={setDictatingDescription}
                       onText={(text) => setDescription((current) => [current.trimEnd(), text].filter(Boolean).join(" "))}
                     />
+                    <label className="absolute right-2 top-2 flex h-11 w-11 cursor-pointer items-center justify-center rounded-xl border border-slate-700 text-indigo-200 hover:bg-indigo-600/20 focus-within:ring-2 focus-within:ring-indigo-400">
+                      <input type="file" aria-label="Anexar arquivo ou foto" className="sr-only"
+                        accept=".jpg,.jpeg,.png,.webp,.pdf,.docx,.txt,.csv,.md"
+                        disabled={readingAttachment}
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0];
+                          event.currentTarget.value = "";
+                          if (file) void attachFile(file);
+                        }} />
+                      <Paperclip className="h-5 w-5" aria-hidden="true" />
+                    </label>
                   </div>
+                  {readingAttachment && <p role="status" className="mt-1 text-xs text-slate-300">Lendo o material de apoio…</p>}
+                  {attachmentError && <p role="alert" className="mt-1 text-xs text-amber-200">{attachmentError}</p>}
+                  {attachment && <p className="mt-1 text-xs text-slate-400">O texto extraído ficará disponível para consulta na reunião.</p>}
+                  {attachment && (
+                    <div className="mt-2 flex items-center justify-between gap-2 text-xs text-indigo-200">
+                      <span className="min-w-0 truncate">{attachment.name}</span>
+                      <button type="button" className="min-h-11 shrink-0 px-2 hover:underline" disabled={readingAttachment}
+                        onClick={() => setAttachment(null)}>Remover anexo</button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -604,7 +644,7 @@ export default function RecordPage() {
             <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-rose-600 to-indigo-600 p-1 mx-auto shadow-xl shadow-rose-600/30">
               <button
                 onClick={startRecording}
-                disabled={dictating || dictatingDescription}
+                disabled={dictating || dictatingDescription || readingAttachment}
                 className="w-full h-full rounded-full bg-slate-950 hover:bg-rose-600/20 flex items-center justify-center border border-rose-500/50 transition-all transform hover:scale-105 active:scale-95 group focus:outline-none"
               >
                 <Mic className="w-10 h-10 text-rose-500 group-hover:text-white transition-colors" />
@@ -614,7 +654,7 @@ export default function RecordPage() {
             <div className="space-y-2 max-w-md mx-auto">
               <button
                 onClick={startRecording}
-                disabled={dictating || dictatingDescription}
+                disabled={dictating || dictatingDescription || readingAttachment}
                 className="w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-extrabold text-lg shadow-lg shadow-rose-600/25 transition-all transform hover:-translate-y-0.5 active:scale-95"
               >
                 INICIAR GRAVAÇÃO

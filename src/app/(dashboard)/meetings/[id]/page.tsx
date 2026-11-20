@@ -5,15 +5,14 @@ import { useParams, useRouter } from "next/navigation";
 import {
   FileText,
   Sparkles,
-  CheckCircle2,
   AlertTriangle,
-  Award,
   Clock,
   DollarSign,
   Calendar,
   Quote,
   TrendingUp,
   Download,
+  Upload,
   Copy,
   Edit2,
   Check,
@@ -21,10 +20,11 @@ import {
   Share2,
   Trash2,
   X,
-  ChevronRight
 } from "lucide-react";
 import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
+import { MeetingBoards } from "@/components/meetings/MeetingBoards";
+import { MeetingMaterials } from "@/components/meetings/MeetingMaterials";
 import { MeetingChat } from "@/components/meetings/MeetingChat";
 import { ensureValidUuid } from "@/lib/supabase/client";
 import Link from "next/link";
@@ -35,9 +35,10 @@ export default function MeetingDetailPage() {
   const id = params.id as string;
 
   const [details, setDetails] = useState<CompleteMeetingDetails | null>(null);
-  const [activeTab, setActiveTab] = useState<"summary" | "transcript" | "export">("summary");
+  const [activeTab, setActiveTab] = useState<"summary" | "transcript" | "import" | "export">("summary");
   const [loadSlow, setLoadSlow] = useState(false);
   
+  const [openMaterialsChat, setOpenMaterialsChat] = useState(false);
   const [selectedSegment, setSelectedSegment] = useState<string | null>(null);
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [newSpeakerName, setNewSpeakerName] = useState("");
@@ -99,7 +100,7 @@ export default function MeetingDetailPage() {
     );
   }
 
-  const { meeting, summary, transcript, highlights, decisions, tasks, pending_items, risks, opportunities, values, dates, quotes, next_steps_agreed, next_steps_ai_suggestions } = details;
+  const { meeting, summary, transcript, decisions, tasks, values, next_steps_agreed } = details;
 
   // Atualizar Nome de Participante (Edição Global em toda a reunião - Req #8)
   const handleSaveSpeakerName = (oldSpeaker: string) => {
@@ -263,7 +264,7 @@ export default function MeetingDetailPage() {
         </button>
 
         <button
-          onClick={() => setActiveTab("transcript")}
+          onClick={() => { setOpenMaterialsChat(false); setActiveTab("transcript"); }}
           className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
             activeTab === "transcript"
               ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
@@ -272,6 +273,18 @@ export default function MeetingDetailPage() {
         >
           <FileText className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate">Transcrição</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("import")}
+          className={`flex-1 py-2 px-1.5 sm:px-3 rounded-xl font-bold text-[10px] sm:text-xs flex items-center justify-center gap-1 transition-all whitespace-nowrap ${
+            activeTab === "import"
+              ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+              : "text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Upload className="w-3.5 h-3.5 shrink-0" />
+          <span className="truncate">Importar</span>
         </button>
 
         <button
@@ -315,188 +328,7 @@ export default function MeetingDetailPage() {
             )}
           </div>
 
-          {/* Grid de 2 Colunas para Decisões & Pontos Importantes */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Decisões Tomadas */}
-            <div className="p-6 rounded-3xl glass-card border border-emerald-500/20 space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-2">
-                  <Award className="w-4 h-4" />
-                  <span>Decisões Tomadas</span>
-                </h2>
-                <span className="text-xs font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
-                  {decisions.length}
-                </span>
-              </div>
-
-              {decisions.length === 0 ? (
-                <p className="text-xs text-slate-400">Nenhuma decisão confirmada nesta reunião.</p>
-              ) : (
-                <div className="space-y-3">
-                  {decisions.map((d) => (
-                    <div key={d.id} className="p-3.5 rounded-2xl bg-slate-900/80 border border-emerald-500/20 space-y-1.5">
-                      <p className="text-xs font-semibold text-slate-100">{d.decision_text}</p>
-                      {d.timestamp_start !== undefined && (
-                        <button
-                          onClick={() => openTranscriptAt(d.timestamp_start ?? 0)}
-                          className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1"
-                        >
-                          <Clock className="w-3 h-3" />
-                          <span>Fonte: {formatTimestamp(d.timestamp_start)}</span>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Pontos Importantes */}
-            <div className="p-6 rounded-3xl glass-card border border-purple-500/20 space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold uppercase tracking-wider text-purple-400 flex items-center gap-2">
-                  <Sparkles className="w-4 h-4" />
-                  <span>Pontos Importantes</span>
-                </h2>
-                <span className="text-xs font-bold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
-                  {highlights.length}
-                </span>
-              </div>
-
-              {highlights.length === 0 ? (
-                <p className="text-xs text-slate-400">Nenhum ponto registrado.</p>
-              ) : (
-                <div className="space-y-3">
-                  {highlights.map((h) => (
-                    <div key={h.id} className="p-3.5 rounded-2xl bg-slate-900/80 border border-purple-500/20 space-y-1.5">
-                      <p className="text-xs text-slate-200">{h.description}</p>
-                      {h.timestamp_start !== undefined && (
-                        <button
-                          onClick={() => openTranscriptAt(h.timestamp_start ?? 0)}
-                          className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1"
-                        >
-                          <Clock className="w-3 h-3" />
-                          <span>Trecho: {formatTimestamp(h.timestamp_start)}</span>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Tarefas Mapeadas */}
-          <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-bold uppercase tracking-wider text-amber-400 flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Tarefas Mapeadas</span>
-              </h2>
-              <span className="text-xs font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300">
-                {tasks.length}
-              </span>
-            </div>
-
-            {tasks.length === 0 ? (
-              <p className="text-xs text-slate-400">Nenhuma tarefa identificada.</p>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {tasks.map((task) => (
-                  <div key={task.id} className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <h3 className="font-bold text-slate-100 text-xs">{task.title}</h3>
-                      <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-amber-500/20 text-amber-300">
-                        {task.priority}
-                      </span>
-                    </div>
-
-                    <div className="text-[11px] text-slate-400 space-y-1">
-                      <p>
-                        <strong className="text-slate-300">Responsável: </strong>
-                        <span className={task.assignee.includes("não definido") ? "text-amber-400 italic" : "text-indigo-300 font-semibold"}>
-                          {task.assignee}
-                        </span>
-                      </p>
-                      <p>
-                        <strong className="text-slate-300">Prazo: </strong>
-                        <span className={task.original_due_date_text?.includes("não definido") ? "text-amber-400 italic" : "text-slate-200"}>
-                          {task.original_due_date_text}
-                        </span>
-                      </p>
-                    </div>
-
-                    {task.timestamp_start !== undefined && (
-                      <button
-                        onClick={() => openTranscriptAt(task.timestamp_start ?? 0)}
-                        className="text-[10px] font-mono text-indigo-400 hover:underline flex items-center gap-1 pt-1"
-                      >
-                        <Clock className="w-3 h-3" />
-                        <span>Ver origem ({formatTimestamp(task.timestamp_start)})</span>
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Pendências, Riscos & Oportunidades (Grid de 3 Colunas) */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {/* Pendências */}
-            <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-rose-400">Pendências</h2>
-              {pending_items.length === 0 ? (
-                <p className="text-xs text-slate-400">Sem pendências abertas.</p>
-              ) : (
-                <ul className="space-y-2 text-xs text-slate-300">
-                  {pending_items.map((p) => (
-                    <li key={p.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-rose-500/20">
-                      • {p.item_text}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            {/* Riscos e Alertas */}
-            <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-amber-400">Riscos e Alertas</h2>
-              {risks.length === 0 ? (
-                <p className="text-xs text-slate-400">Nenhum risco detectado.</p>
-              ) : (
-                <div className="space-y-2 text-xs">
-                  {risks.map((r) => (
-                    <div key={r.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-amber-500/20 space-y-1">
-                      <p className="text-slate-200">{r.description}</p>
-                      {r.is_ai_generated && (
-                        <span className="text-[9px] font-semibold text-indigo-400 block">
-                          Risco identificado pela IA
-                        </span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Oportunidades */}
-            <div className="p-6 rounded-3xl glass-card border border-slate-800 space-y-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-emerald-400">Oportunidades</h2>
-              {opportunities.length === 0 ? (
-                <p className="text-xs text-slate-400">Nenhuma oportunidade listada.</p>
-              ) : (
-                <div className="space-y-2 text-xs">
-                  {opportunities.map((op) => (
-                    <div key={op.id} className="p-2.5 rounded-xl bg-slate-900/60 border border-emerald-500/20">
-                      <span className="text-[9px] font-bold uppercase text-emerald-400 block mb-0.5">{op.category}</span>
-                      <p className="text-slate-200">{op.description}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
+          <MeetingBoards key={meeting.id} details={details} onTimestamp={openTranscriptAt} />
 
           {/* Valores Monetários */}
           {values.length > 0 && (
@@ -520,7 +352,7 @@ export default function MeetingDetailPage() {
 
       {activeTab === "transcript" && (
         <div className="space-y-6">
-          <MeetingChat details={details} executive voiceComposer onTimestamp={openTranscriptAt} />
+          <MeetingChat details={details} executive voiceComposer openMaterials={openMaterialsChat} onTimestamp={openTranscriptAt} />
           {Object.keys(transcript?.speaker_map || {}).length > 0 && (
             <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4" id="participantes">
               <h2 className="text-sm font-semibold text-slate-200">Participantes</h2>
@@ -605,6 +437,10 @@ export default function MeetingDetailPage() {
             );
           })()}
         </div>
+      )}
+
+      {activeTab === "import" && (
+        <MeetingMaterials key={meeting.id} details={details} onOpenChat={() => { setOpenMaterialsChat(true); setActiveTab("transcript"); }} />
       )}
 
       {/* TAB 3: EXPORTAÇÃO */}

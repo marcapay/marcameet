@@ -167,7 +167,16 @@ export interface MeetingQuote {
   timestamp_start?: number;
 }
 
+export type MeetingBoardKey = "decisions" | "highlights" | "tasks" | "pending_items" | "risks" | "opportunities";
+
+export interface MeetingMaterial {
+  board?: MeetingBoardKey;
+  name: string;
+  text: string;
+}
+
 export interface CompleteMeetingDetails {
+  support_materials?: MeetingMaterial[];
   meeting: Meeting;
   transcript?: Transcript;
   summary?: MeetingSummary;
