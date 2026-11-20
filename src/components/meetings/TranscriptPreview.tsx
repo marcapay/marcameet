@@ -1,7 +1,8 @@
 "use client";
 
-import { useId, useMemo } from "react";
-import { Download } from "lucide-react";
+import { useId, useMemo, useState } from "react";
+import { Download, RefreshCw } from "lucide-react";
+import { getLocalMeetings, saveLocalMeeting } from "@/lib/storage/mockStorage";
 import type { CompleteMeetingDetails } from "@/types/database";
 
 const placeholder = /^(?:(?:gravação|transcrição) iniciada|sem transcrição)[.!…\s]*$/i;
@@ -29,9 +30,43 @@ function getTranscriptParagraphs(transcript: CompleteMeetingDetails["transcript"
 
 export function TranscriptPreview({ details }: { details: CompleteMeetingDetails }) {
   const headingId = useId();
+  const [recovering, setRecovering] = useState(false);
+  const [recoveryStatus, setRecoveryStatus] = useState("");
   const paragraphs = useMemo(() => getTranscriptParagraphs(details.transcript), [details.transcript]);
   const { title, status } = details.meeting;
   const inProgress = ["TRANSCREVENDO", "ANALISANDO", "PROCESSANDO"].includes(status);
+
+  const canRecover = ["recording", "online_meeting"].includes(details.meeting.source_type);
+
+  async function recover() {
+    if (!canRecover) return;
+    setRecovering(true);
+    setRecoveryStatus("Procurando o áudio salvo neste navegador…");
+    try {
+      const { recordingEngine } = await import("@/lib/audio/recordingEngine");
+      const current = recordingEngine.getActiveSession();
+      if (current?.meeting_id === details.meeting.id && recordingEngine.hasLiveRecorder()) {
+        throw new Error("Encerre a gravação antes de recuperar a transcrição.");
+      }
+      const { recoverTranscript } = await import("@/lib/recording/recoverTranscript");
+      const { transcript, audioDuration } = await recoverTranscript(details, (done, total) =>
+        setRecoveryStatus(`Transcrevendo parte ${done} de ${total}…`));
+      const latest = getLocalMeetings().find(({ meeting }) => meeting.id === details.meeting.id);
+      if (!latest) throw new Error("A reunião deixou de estar disponível.");
+      const oldText = getTranscriptParagraphs(latest.transcript).join(" ");
+      if (transcript.raw_text.length <= oldText.length) {
+        throw new Error("O áudio encontrado não produziu mais texto que a transcrição já salva.");
+      }
+      saveLocalMeeting({ ...latest, transcript });
+      const minutes = Math.floor(audioDuration / 60);
+      const seconds = Math.round(audioDuration) % 60;
+      setRecoveryStatus(`Texto recuperado de ${minutes} min ${seconds} s de áudio disponível. Se a duração for menor que a reunião, parte da gravação não está neste navegador.`);
+    } catch (error) {
+      setRecoveryStatus(error instanceof Error ? error.message : "Não foi possível recuperar a transcrição.");
+    } finally {
+      setRecovering(false);
+    }
+  }
 
   function downloadTranscript() {
     const file = new Blob(["\uFEFF", title, "\n\n", paragraphs.join("\n\n"), "\n"], {
@@ -71,6 +106,19 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
           </p>
         )}
       </div>
+      {canRecover && (
+        <details className="rounded-xl border border-slate-800 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-indigo-200">Falta parte da conversa?</summary>
+          <p className="my-2 text-xs leading-relaxed text-slate-300">
+            No aparelho em que gravou, você pode transcrever novamente o áudio original que ainda estiver salvo. Ao clicar, o áudio será enviado em partes à OpenAI usando a chave da sua conta.
+          </p>
+          <button type="button" disabled={recovering} onClick={() => void recover()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-indigo-400/50 px-3 text-sm text-indigo-200 disabled:opacity-50">
+            <RefreshCw className={`h-4 w-4 ${recovering ? "motion-safe:animate-spin" : ""}`} aria-hidden="true" />
+            Recuperar transcrição do áudio
+          </button>
+          {recoveryStatus && <p role="status" className="mt-2 text-sm text-slate-200">{recoveryStatus}</p>}
+        </details>
+      )}
     </section>
   );
 }
