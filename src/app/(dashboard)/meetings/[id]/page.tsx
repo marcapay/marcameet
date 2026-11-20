@@ -25,6 +25,7 @@ import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, delet
 import { CompleteMeetingDetails } from "@/types/database";
 import { MeetingBoards } from "@/components/meetings/MeetingBoards";
 import { MeetingMaterials } from "@/components/meetings/MeetingMaterials";
+import { TranscriptPreview } from "@/components/meetings/TranscriptPreview";
 import { MeetingChat } from "@/components/meetings/MeetingChat";
 import { ensureValidUuid } from "@/lib/supabase/client";
 import Link from "next/link";
@@ -353,6 +354,7 @@ export default function MeetingDetailPage() {
       {activeTab === "transcript" && (
         <div className="space-y-6">
           <MeetingChat details={details} executive voiceComposer openMaterials={openMaterialsChat} onTimestamp={openTranscriptAt} />
+          <TranscriptPreview details={details} />
           {Object.keys(transcript?.speaker_map || {}).length > 0 && (
             <div className="p-4 sm:p-6 rounded-3xl glass-card border border-slate-800 space-y-4" id="participantes">
               <h2 className="text-sm font-semibold text-slate-200">Participantes</h2>
@@ -397,34 +399,6 @@ export default function MeetingDetailPage() {
               </div>
             </div>
           )}
-          <section className="rounded-3xl glass-card border border-slate-800 p-4 sm:p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-slate-100">Resumo em blocos</h2>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                { title: "Objetivo", items: [summary?.objective] },
-                { title: "Assuntos discutidos", items: summary?.key_topics || [] },
-                { title: "Decisões", items: decisions.map((decision) => decision.decision_text) },
-                { title: "Próximos passos", items: next_steps_agreed?.length ? next_steps_agreed : tasks.map((task) => task.title) },
-                { title: "Conclusão", items: [summary?.conclusions] },
-              ].map(({ title, items }) => {
-                const entries = items.filter((item) => item?.trim());
-                if (!entries.length) return null;
-                return (
-                  <div key={title} className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 space-y-2">
-                    <h3 className="text-sm font-semibold text-indigo-200">{title}</h3>
-                    <ul className="space-y-1 pl-4 list-disc text-sm text-slate-300">
-                      {entries.slice(0, 5).map((entry, index) => <li key={index}>{entry}</li>)}
-                    </ul>
-                    {entries.length > 5 && <p className="text-xs text-slate-400">Consulte Análise IA para ver mais.</p>}
-                  </div>
-                );
-              })}
-            </div>
-            {!summary?.objective && !summary?.key_topics?.length && !summary?.conclusions &&
-              !decisions.length && !tasks.length && !next_steps_agreed?.length && (
-              <p className="text-sm text-slate-400">Use a barra acima para pedir um resumo da transcrição.</p>
-            )}
-          </section>
           {selectedSegment && (() => {
             const segment = transcript?.segments?.find(({ id }) => id === selectedSegment);
             if (!segment) return null;
