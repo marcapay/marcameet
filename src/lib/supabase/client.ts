@@ -429,7 +429,7 @@ export async function saveMeetingToSupabase(details: CompleteMeetingDetails): Pr
     });
 
     if (mErr) {
-      await client.from('meetings').upsert({
+      const { error: fallbackError } = await client.from('meetings').upsert({
         id: meetingUuid,
         user_id: userUuid,
         title: meeting.title,
@@ -441,6 +441,10 @@ export async function saveMeetingToSupabase(details: CompleteMeetingDetails): Pr
         error_message: packedJsonPayload,
         tags: Array.isArray(meeting.tags) ? meeting.tags : [],
       });
+      if (fallbackError) {
+        console.warn('Falha ao salvar a reunião no Supabase:', mErr.code, fallbackError.code);
+        return false;
+      }
     }
 
     // 3. Salvar SEMPRE a Transcrição na tabela transcripts e os segmentos em transcript_segments
@@ -552,14 +556,15 @@ export async function fetchMeetingsFromSupabase(userId?: string, userEmail?: str
   if (!client) return [];
 
   try {
-    const { data: rows, error } = await client
-      .from('marcameet')
-      .select('*')
-      .neq('source_type', 'account_profile')
-      .order('meeting_date', { ascending: false })
-      .limit(100);
-
-    if (error || !rows || rows.length === 0) return [];
+    const [primary, fallback] = await Promise.all([
+      client.from('marcameet').select('*').neq('source_type', 'account_profile')
+        .order('meeting_date', { ascending: false }).limit(100),
+      client.from('meetings').select('*').order('meeting_date', { ascending: false }).limit(100),
+    ]);
+    if (primary.error && fallback.error) {
+      throw new Error(`Falha ao consultar reuniões: ${primary.error.code}, ${fallback.error.code}`);
+    }
+    const rows = [...(primary.data ?? []), ...(fallback.data ?? [])];
 
     // Filtrar linhas de perfil de conta caso tenham tags __account_profile__
     const meetingRows = rows.filter(
@@ -733,7 +738,7 @@ export async function fetchMeetingsFromSupabase(userId?: string, userEmail?: str
     return reconstructed;
   } catch (err) {
     console.warn("Aviso ao buscar reuniões do Supabase:", err);
-    return [];
+    throw err;
   }
 }
 
