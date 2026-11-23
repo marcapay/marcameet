@@ -17,7 +17,13 @@ export function mergeMeetingEntries(a: CompleteMeetingDetails, b: CompleteMeetin
   const latest = bTime >= aTime ? b : a;
   const older = latest === a ? b : a;
   const analysis = latest.summary?.objective || !older.summary?.objective ? latest : older;
-  const transcription = transcriptText(latest) || !transcriptText(older) ? latest : older;
+  const latestText = transcriptText(latest);
+  const olderText = transcriptText(older);
+  const latestIsPartial = Boolean(latest.transcription_warning);
+  const olderIsComplete = Boolean(olderText) && !older.transcription_warning;
+  const transcription = olderText && (!latestText || (latestIsPartial && olderIsComplete && olderText.length > latestText.length))
+    ? older
+    : latest;
 
   return {
     ...analysis,
