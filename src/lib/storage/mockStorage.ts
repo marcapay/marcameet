@@ -402,7 +402,6 @@ async function syncAccountMeetings(): Promise<MeetingSyncResult> {
           upsertIntoMeetingsMap(m);
         }
       }
-      syncedCloud = true;
     }
   } catch {}
 
@@ -414,18 +413,25 @@ async function syncAccountMeetings(): Promise<MeetingSyncResult> {
       }
 
       const cloudMeetings = await fetchMeetingsFromSupabase(account?.id, account?.email);
-      const cloudById = new Map(cloudMeetings.map((item) => [ensureValidUuid(item.meeting.id), item]));
+      const cloudById = new Map<string, CompleteMeetingDetails>();
+      for (const item of cloudMeetings) {
+        const id = ensureValidUuid(item.meeting.id);
+        const previous = cloudById.get(id);
+        cloudById.set(id, previous ? mergeMeetingEntries(previous, item) : item);
+      }
       cloudMeetings.forEach(upsertIntoMeetingsMap);
 
       const localMeetings = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
-      await Promise.all(localMeetings.filter((item) => {
+      const writes = await Promise.all(localMeetings.filter((item) => {
         const remote = cloudById.get(ensureValidUuid(item.meeting.id));
         return !remote || remote.meeting.updated_at !== item.meeting.updated_at ||
           JSON.stringify(remote.transcript) !== JSON.stringify(item.transcript);
       }).slice(0, 30).map((item) => saveMeetingToSupabase(withoutLocalMaterials(item)).catch(() => false)));
 
-      syncedCloud = true;
-    } catch {}
+      syncedCloud = writes.every(Boolean);
+    } catch {
+      syncedCloud = false;
+    }
   }
 
   if (account) {
