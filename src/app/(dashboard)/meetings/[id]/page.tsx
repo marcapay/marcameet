@@ -21,7 +21,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting, subscribeLocalMeetings } from "@/lib/storage/mockStorage";
+import { getLocalMeetings, updateSpeakerNameInMeeting, updateMeetingTitle, deleteLocalMeeting, subscribeLocalMeetings, syncAccountMeetingsNow } from "@/lib/storage/mockStorage";
 import { CompleteMeetingDetails } from "@/types/database";
 import { MeetingBoards } from "@/components/meetings/MeetingBoards";
 import { MeetingMaterials } from "@/components/meetings/MeetingMaterials";
@@ -70,6 +70,7 @@ export default function MeetingDetailPage() {
     setLoadSlow(false);
     load(getLocalMeetings());
     const unsubscribe = subscribeLocalMeetings(load);
+    void syncAccountMeetingsNow().catch(() => {});
     const updateActive = () => {
       const current = recordingEngine.getActiveSession();
       setRecoverableHere(Boolean(current && ensureValidUuid(current.meeting_id) === canonicalId &&

@@ -1,3 +1,4 @@
+import { mergeMeetingEntries } from "@/lib/storage/mergeMeetingEntries";
 import { CompleteMeetingDetails, UserAccount } from "@/types/database";
 import {
   deleteMeetingFromSupabase,
@@ -147,16 +148,6 @@ function isAnonymousUserId(userId?: string): boolean {
 function withoutLocalMaterials(details: CompleteMeetingDetails): CompleteMeetingDetails {
   const { support_materials: _localMaterials, ...syncedDetails } = details;
   return syncedDetails;
-}
-
-function mergeMeetingEntries(a: CompleteMeetingDetails, b: CompleteMeetingDetails): CompleteMeetingDetails {
-  const aHasSummary = Boolean(a.summary?.objective);
-  const bHasSummary = Boolean(b.summary?.objective);
-  const aTime = new Date(a.meeting.updated_at || a.meeting.meeting_date || 0).getTime();
-  const bTime = new Date(b.meeting.updated_at || b.meeting.meeting_date || 0).getTime();
-  const latest = aHasSummary === bHasSummary ? (bTime >= aTime ? b : a) : (bHasSummary ? b : a);
-  const localMaterials = b.support_materials ?? a.support_materials;
-  return localMaterials ? { ...latest, support_materials: localMaterials } : latest;
 }
 
 function meetingItems<T>(value: T[] | null | undefined): T[] {
@@ -327,7 +318,27 @@ function adoptAnonymousMeetingsForAccount(account: UserAccount): boolean {
 /**
  * Sincroniza reuniões da conta via /api/cloud-sync, IndexedDB e Supabase Cloud
  */
-export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; syncedCloud: boolean }> {
+type MeetingSyncResult = { totalSaved: number; syncedCloud: boolean };
+let activeSync: Promise<MeetingSyncResult> | undefined;
+let queuedSync: Promise<MeetingSyncResult> | undefined;
+
+export function syncAccountMeetingsNow(): Promise<MeetingSyncResult> {
+  if (activeSync) {
+    queuedSync ??= activeSync.then(runQueuedSync, runQueuedSync);
+    return queuedSync;
+  }
+  activeSync = syncAccountMeetings().finally(() => {
+    activeSync = undefined;
+  });
+  return activeSync;
+}
+
+function runQueuedSync(): Promise<MeetingSyncResult> {
+  queuedSync = undefined;
+  return syncAccountMeetingsNow();
+}
+
+async function syncAccountMeetings(): Promise<MeetingSyncResult> {
   if (typeof window === "undefined") return { totalSaved: 0, syncedCloud: false };
 
   await requestPersistentBrowserStorage().catch(() => {});
@@ -402,19 +413,16 @@ export async function syncAccountMeetingsNow(): Promise<{ totalSaved: number; sy
         await saveUserAccountToSupabase(account).catch(() => {});
       }
 
-      // Primeiro enviar reuniões locais para o Supabase (com __MM_JSON__ completo)
-      const localBeforePull = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
-      await Promise.all(
-        localBeforePull.slice(0, 30).map((m) =>
-          saveMeetingToSupabase(withoutLocalMaterials(m)).catch(() => false)
-        )
-      );
-
-      // Depois buscar todas as reuniões do Supabase
       const cloudMeetings = await fetchMeetingsFromSupabase(account?.id, account?.email);
-      cloudMeetings.forEach((cloudItem) => {
-        upsertIntoMeetingsMap(cloudItem);
-      });
+      const cloudById = new Map(cloudMeetings.map((item) => [ensureValidUuid(item.meeting.id), item]));
+      cloudMeetings.forEach(upsertIntoMeetingsMap);
+
+      const localMeetings = filterMeetingsForCurrentUser(Array.from(allMeetingsMap.values()), account);
+      await Promise.all(localMeetings.filter((item) => {
+        const remote = cloudById.get(ensureValidUuid(item.meeting.id));
+        return !remote || remote.meeting.updated_at !== item.meeting.updated_at ||
+          JSON.stringify(remote.transcript) !== JSON.stringify(item.transcript);
+      }).slice(0, 30).map((item) => saveMeetingToSupabase(withoutLocalMaterials(item)).catch(() => false)));
 
       syncedCloud = true;
     } catch {}
@@ -551,18 +559,9 @@ export function saveLocalMeeting(details: CompleteMeetingDetails, discardRecorde
     })
     .catch((err) => console.warn("Falha ao salvar a reunião ou limpar o áudio temporário:", err));
 
-  // 4. Sincronizar criação/atualização no Supabase e no /api/cloud-sync
-  saveMeetingToSupabase(withoutLocalMaterials(enrichedDetails)).catch((err) =>
-    console.warn("Falha na sincronização assíncrona com Supabase:", err)
+  void syncAccountMeetingsNow().catch((err) =>
+    console.warn("Falha na sincronização da reunião:", err)
   );
-
-  fetch("/api/cloud-sync", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      meetings: [withoutLocalMaterials(enrichedDetails)],
-    }),
-  }).catch(() => {});
 }
 
 export async function deleteLocalMeeting(meetingId: string): Promise<boolean> {

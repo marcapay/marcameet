@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
-import { getLocalMeetings, saveLocalMeeting } from "@/lib/storage/mockStorage";
+import { Download, RefreshCw, Share2 } from "lucide-react";
+import { getLocalMeetings, saveLocalMeeting, syncAccountMeetingsNow } from "@/lib/storage/mockStorage";
 import type { CompleteMeetingDetails } from "@/types/database";
 
 const placeholder = /^(?:(?:gravação|transcrição) iniciada|sem transcrição)[.!…\s]*$/i;
@@ -51,6 +51,8 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
   }, [details.transcript]);
 
   const headingId = useId();
+  const [syncing, setSyncing] = useState(false);
+  const [transferStatus, setTransferStatus] = useState("");
   const [recovering, setRecovering] = useState(false);
   const [recoveryStatus, setRecoveryStatus] = useState("");
   const paragraphs = useMemo(() => getTranscriptParagraphs(details.transcript), [details.transcript]);
@@ -92,15 +94,52 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
     }
   }
 
-  function downloadTranscript() {
-    const file = new Blob(["\uFEFF", title, "\n\n", paragraphs.join("\n\n"), "\n"], {
-      type: "text/plain;charset=utf-8",
-    });
+  function transcriptFile() {
     const filename = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").trim().slice(0, 120);
+    return new File(["\uFEFF", title, "\n\n", paragraphs.join("\n\n"), "\n"],
+      `Transcrição - ${filename || "Reunião"}.txt`, { type: "text/plain;charset=utf-8" });
+  }
+
+  async function syncTranscript() {
+    setSyncing(true);
+    setTransferStatus("Sincronizando reuniões…");
+    try {
+      const result = await syncAccountMeetingsNow();
+      const meeting = getLocalMeetings().find((item) => item.meeting.id === details.meeting.id);
+      const hasText = getTranscriptParagraphs(meeting?.transcript).length > 0;
+      setTransferStatus(!result.syncedCloud
+        ? "Não foi possível conectar à sincronização. Tente novamente."
+        : hasText
+          ? "Sincronização consultada. Confira o texto disponível abaixo."
+          : "A transcrição ainda não chegou a este aparelho. Abra a mesma reunião no celular e toque em Sincronizar transcrição.");
+    } catch {
+      setTransferStatus("Não foi possível concluir a sincronização. Tente novamente.");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  async function shareTranscript() {
+    const data = { files: [transcriptFile()] };
+    if (!navigator.canShare?.(data)) {
+      downloadTranscript(data.files[0]);
+      setTransferStatus("O arquivo foi baixado. Você pode enviá-lo ao computador pelo aplicativo de sua escolha.");
+      return;
+    }
+    try {
+      await navigator.share(data);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        setTransferStatus("Não foi possível abrir o compartilhamento. Use Baixar transcrição.");
+      }
+    }
+  }
+
+  function downloadTranscript(file = transcriptFile()) {
     const url = URL.createObjectURL(file);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `Transcrição - ${filename || "Reunião"}.txt`;
+    link.download = file.name;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -111,13 +150,26 @@ export function TranscriptPreview({ details }: { details: CompleteMeetingDetails
     <section aria-labelledby={headingId} className="space-y-3 rounded-3xl glass-card border border-slate-800 p-4 pb-2 sm:p-6 sm:pb-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id={headingId} className="text-lg font-semibold text-slate-100">Transcrição da reunião</h2>
-        {paragraphs.length > 0 && (
-          <button type="button" onClick={downloadTranscript} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-indigo-600 px-3 text-sm font-semibold text-white hover:bg-indigo-500">
-            <Download className="h-4 w-4" aria-hidden="true" />
-            Baixar transcrição
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => void syncTranscript()} disabled={syncing} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-indigo-400/50 px-3 text-sm font-semibold text-indigo-200 disabled:opacity-50">
+            <RefreshCw className={`h-4 w-4 ${syncing ? "motion-safe:animate-spin" : ""}`} aria-hidden="true" />
+            Sincronizar transcrição
           </button>
-        )}
+          {paragraphs.length > 0 && (
+            <>
+              <button type="button" onClick={() => void shareTranscript()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-indigo-400/50 px-3 text-sm font-semibold text-indigo-200">
+                <Share2 className="h-4 w-4" aria-hidden="true" />
+                Compartilhar transcrição
+              </button>
+              <button type="button" onClick={() => downloadTranscript()} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-indigo-600 px-3 text-sm font-semibold text-white hover:bg-indigo-500">
+                <Download className="h-4 w-4" aria-hidden="true" />
+                Baixar transcrição
+              </button>
+            </>
+          )}
+        </div>
       </div>
+      {transferStatus && <p role="status" className="text-sm text-slate-200">{transferStatus}</p>}
       {details.transcription_warning && <p role="status" className="text-sm text-amber-200">{details.transcription_warning}</p>}
       {canRecover && (
         <details className="rounded-xl border border-slate-800 p-3">

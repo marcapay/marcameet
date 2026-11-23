@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
+import { mergeMeetingEntries } from "@/lib/storage/mergeMeetingEntries";
 import path from "path";
 import { ensureValidUuid } from "@/lib/supabase/client";
 
@@ -156,7 +157,8 @@ export async function POST(req: NextRequest) {
     if (Array.isArray(body.meetings)) {
       for (const m of body.meetings) {
         if (typeof m?.meeting?.id === "string" && m.meeting.title && !deleted[ensureValidUuid(m.meeting.id)]) {
-          state.meetings[m.meeting.id] = m;
+          const existing = state.meetings[m.meeting.id];
+          state.meetings[m.meeting.id] = existing ? mergeMeetingEntries(existing, m) : m;
         }
       }
     }
